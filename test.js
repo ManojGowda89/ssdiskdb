@@ -189,3 +189,93 @@ test("SSDiskDB Integration Tests", async (t) => {
     await secretDb.close();
   });
 });
+
+test("SSDiskDB Local Mode Integration Tests", async (t) => {
+  let localDb;
+  const storagePath = "./test-local-db";
+
+  t.before(async () => {
+    // Ensure clean start
+    const fs = require("fs");
+    fs.rmSync(storagePath, { recursive: true, force: true });
+    localDb = await connect({ local: true, storagePath });
+  });
+
+  t.after(async () => {
+    if (localDb) {
+      await localDb.close();
+    }
+    // Clean up
+    const fs = require("fs");
+    fs.rmSync(storagePath, { recursive: true, force: true });
+  });
+
+  await t.test("String operations in local mode", async () => {
+    await localDb.set("key1", "val1");
+    assert.strictEqual(await localDb.get("key1"), "val1");
+    assert.strictEqual(await localDb.exists("key1"), true);
+    assert.strictEqual(await localDb.exists("nonexistent"), false);
+
+    // JSON objects
+    const obj = { x: 10, y: [true, null] };
+    await localDb.set("key2", obj);
+    assert.deepStrictEqual(await localDb.get("key2"), obj);
+
+    // Incr
+    assert.strictEqual(await localDb.incr("counter", 10), 10);
+    assert.strictEqual(await localDb.incr("counter", 5), 15);
+
+    // Del
+    await localDb.del("key1");
+    assert.strictEqual(await localDb.get("key1"), undefined);
+  });
+
+  await t.test("Hash operations in local mode", async () => {
+    await localDb.hset("hash1", "field1", "val1");
+    assert.strictEqual(await localDb.hget("hash1", "field1"), "val1");
+    await localDb.hset("hash1", "field2", { nested: true });
+    assert.deepStrictEqual(await localDb.hget("hash1", "field2"), { nested: true });
+
+    await localDb.hdel("hash1", "field1");
+    assert.strictEqual(await localDb.hget("hash1", "field1"), undefined);
+  });
+
+  await t.test("Sorted Set operations in local mode", async () => {
+    await localDb.zset("zset1", "m1", 99.5);
+    assert.strictEqual(await localDb.zget("zset1", "m1"), 99.5);
+    await localDb.zdel("zset1", "m1");
+    assert.strictEqual(await localDb.zget("zset1", "m1"), undefined);
+  });
+
+  await t.test("Encryption in local mode", async () => {
+    const secretLocalDb = await connect("local:./test-local-secure-db", { encryptionKey: "local-secret" });
+    await secretLocalDb.set("confidential", { password: "123" });
+
+    // Correct decryption
+    assert.deepStrictEqual(await secretLocalDb.get("confidential"), { password: "123" });
+
+    // Close to release the database directory lock
+    await secretLocalDb.close();
+
+    // Open without encryption key and read raw string format
+    const rawLocalDb = await connect("local:./test-local-secure-db");
+    const raw = await rawLocalDb.get("confidential");
+    assert.strictEqual(typeof raw, "string");
+    assert.ok(/^[0-9a-fA-F]{32}:[0-9a-fA-F]+$/.test(raw));
+
+    await rawLocalDb.close();
+
+    const fs = require("fs");
+    fs.rmSync("./test-local-secure-db", { recursive: true, force: true });
+  });
+
+  await t.test("Data persistence in local mode", async () => {
+    await localDb.set("persistKey", "should be saved");
+    await localDb.close();
+
+    // Reconnect to same path
+    localDb = await connect({ local: true, storagePath });
+    assert.strictEqual(await localDb.get("persistKey"), "should be saved");
+  });
+});
+

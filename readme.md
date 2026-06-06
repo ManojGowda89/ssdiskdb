@@ -7,7 +7,7 @@
 
 **SSDiskDB** is a high-performance, modern, Promise-based client wrapper for [SSDB (Fast NoSQL Database)](https://github.com/ideawu/ssdb). It is designed to act as an easy, clean, and developer-friendly API layer to interact with SSDB in production Node.js applications. 
 
-This client library is hosted at [github.com/ManojGowda89/ssdiskdb](https://github.com/ManojGowda89/ssdiskdb).
+This client library is published on NPM at [npmjs.com/package/ssdiskdb](https://www.npmjs.com/package/ssdiskdb) and hosted on GitHub at [github.com/ManojGowda89/ssdiskdb](https://github.com/ManojGowda89/ssdiskdb).
 
 ---
 
@@ -122,6 +122,27 @@ const db = await connect({
 
 ---
 
+## Connect to Embedded Local Database (Database-less Mode)
+
+For simple or offline projects where you do not want to set up and run a separate SSDB server, SSDiskDB provides an embedded local mode powered by **LevelDB**. It handles all storage locally on disk and supports the exact same API operations, including automatic JSON typing and optional encryption!
+
+```js
+// Option 1: Quick start (stores in default folder './ssdb-local-db')
+const db = await connect("local");
+
+// Option 2: Connect to a custom directory path
+const db = await connect("local:./my-custom-data-dir");
+
+// Option 3: Configure via options object
+const db = await connect({
+  local: true,
+  storagePath: "./my-custom-data-dir",
+  encryptionKey: "my-secure-key" // Local embedded storage can be encrypted too!
+});
+```
+
+---
+
 ## Automatic JSON Serialization & Typing
 
 SSDiskDB automatically serializes and deserializes non-string values:
@@ -182,6 +203,7 @@ await db.close(); // Closes client connection and destroys the pool
 
 - **Official SSDB Database**: [github.com/ideawu/ssdb](https://github.com/ideawu/ssdb)
 - **SSDiskDB Client Library**: [github.com/ManojGowda89/ssdiskdb](https://github.com/ManojGowda89/ssdiskdb)
+- **SSDiskDB NPM Package**: [npmjs.com/package/ssdiskdb](https://www.npmjs.com/package/ssdiskdb)
 - **Zerodha Tech Stack**: [zerodha.tech/stack](https://zerodha.tech/stack/)
 
 ---

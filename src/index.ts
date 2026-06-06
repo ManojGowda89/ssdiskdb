@@ -1,6 +1,7 @@
 import ssdb from "ssdb";
 import { promisify } from "util";
 import crypto from "crypto";
+import { Level } from "level";
 
 export interface SSDiskDBClient {
   set(key: string, value: any): Promise<any>;
@@ -23,6 +24,8 @@ export interface SSDiskDBClient {
 export interface ConnectOptions {
   host?: string;
   encryptionKey?: string;
+  local?: boolean;
+  storagePath?: string;
 }
 
 function serialize(value: any): string {
@@ -72,6 +75,117 @@ function decrypt(encryptedText: string, encryptionKey: string): string {
   }
 }
 
+class LocalSSDBClient implements SSDiskDBClient {
+  private db: Level<string, string>;
+  private encryptionKey?: string;
+
+  constructor(db: Level<string, string>, encryptionKey?: string) {
+    this.db = db;
+    this.encryptionKey = encryptionKey;
+  }
+
+  private getFullKey(prefix: string, name: string, key?: string): string {
+    if (key === undefined) {
+      return `${prefix}:${name}`;
+    }
+    return `${prefix}:${name}:${key}`;
+  }
+
+  async set(key: string, value: any): Promise<any> {
+    let serialized = serialize(value);
+    if (this.encryptionKey) {
+      serialized = encrypt(serialized, this.encryptionKey);
+    }
+    await this.db.put(this.getFullKey("s", key), serialized);
+    return 1;
+  }
+
+  async get(key: string): Promise<any> {
+    let res = await this.db.get(this.getFullKey("s", key));
+    if (res !== undefined && res !== null) {
+      if (this.encryptionKey) {
+        res = decrypt(res, this.encryptionKey);
+      }
+      res = deserialize(res);
+    }
+    return res;
+  }
+
+  async del(key: string): Promise<any> {
+    await this.db.del(this.getFullKey("s", key));
+    return 1;
+  }
+
+  async exists(key: string): Promise<boolean> {
+    const val = await this.db.get(this.getFullKey("s", key));
+    return val !== undefined;
+  }
+
+  async incr(key: string, num: number = 1): Promise<number> {
+    const fullKey = this.getFullKey("s", key);
+    let val = 0;
+    let raw = await this.db.get(fullKey);
+    if (raw !== undefined) {
+      if (this.encryptionKey) {
+        raw = decrypt(raw, this.encryptionKey);
+      }
+      const parsed = deserialize(raw);
+      val = Number(parsed) || 0;
+    }
+    const newVal = val + num;
+    let serialized = serialize(newVal);
+    if (this.encryptionKey) {
+      serialized = encrypt(serialized, this.encryptionKey);
+    }
+    await this.db.put(fullKey, serialized);
+    return newVal;
+  }
+
+  async hset(name: string, key: string, value: any): Promise<any> {
+    let serialized = serialize(value);
+    if (this.encryptionKey) {
+      serialized = encrypt(serialized, this.encryptionKey);
+    }
+    await this.db.put(this.getFullKey("h", name, key), serialized);
+    return 1;
+  }
+
+  async hget(name: string, key: string): Promise<any> {
+    let res = await this.db.get(this.getFullKey("h", name, key));
+    if (res !== undefined && res !== null) {
+      if (this.encryptionKey) {
+        res = decrypt(res, this.encryptionKey);
+      }
+      res = deserialize(res);
+    }
+    return res;
+  }
+
+  async hdel(name: string, key: string): Promise<any> {
+    await this.db.del(this.getFullKey("h", name, key));
+    return 1;
+  }
+
+  async zset(name: string, key: string, score: number): Promise<any> {
+    await this.db.put(this.getFullKey("z", name, key), serialize(score));
+    return 1;
+  }
+
+  async zget(name: string, key: string): Promise<any> {
+    const res = await this.db.get(this.getFullKey("z", name, key));
+    return res !== undefined ? deserialize(res) : undefined;
+  }
+
+  async zdel(name: string, key: string): Promise<any> {
+    await this.db.del(this.getFullKey("z", name, key));
+    return 1;
+  }
+
+  async close(): Promise<void> {
+    await this.db.close();
+  }
+}
+
 export async function connect(
   hostOrOptions?: string | ConnectOptions,
   options?: ConnectOptions
@@ -79,6 +193,8 @@ export async function connect(
   let hostName = "127.0.0.1";
   let port = 8888;
   let encryptionKey: string | undefined;
+  let isLocal = false;
+  let localPath = "./ssdb-local-db";
 
   let hostStr: string | undefined;
 
@@ -87,9 +203,27 @@ export async function connect(
     if (options && options.encryptionKey) {
       encryptionKey = options.encryptionKey;
     }
+    if (hostOrOptions === "local") {
+      isLocal = true;
+    } else if (hostOrOptions.startsWith("local:")) {
+      isLocal = true;
+      localPath = hostOrOptions.substring(6);
+    }
   } else if (hostOrOptions && typeof hostOrOptions === "object") {
     hostStr = hostOrOptions.host;
     encryptionKey = hostOrOptions.encryptionKey;
+    if (hostOrOptions.local) {
+      isLocal = true;
+      if (hostOrOptions.storagePath) {
+        localPath = hostOrOptions.storagePath;
+      }
+    }
+  }
+
+  if (isLocal) {
+    const levelDb = new Level(localPath);
+    await levelDb.open();
+    return new LocalSSDBClient(levelDb, encryptionKey);
   }
 
   if (hostStr) {
@@ -172,4 +306,5 @@ export async function connect(
 export default {
   connect
 };
+
 
