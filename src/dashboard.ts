@@ -1,9 +1,77 @@
 import http from "http";
 import crypto from "crypto";
+import zlib from "zlib";
 import { SSDiskDBClient } from "./index";
+
+// Track client heartbeats globally/module level
+const activeHeartbeats = new Map<string, number>();
 
 export interface DashboardServer {
   close(): Promise<void>;
+}
+
+// Parse raw leveldb key
+function parseKey(rawKey: string): { type: string; server: string; key: string; name?: string } {
+  const parts = rawKey.split(":");
+  const typeChar = parts[0]; // 's', 'h', 'z'
+  let type = "string";
+  if (typeChar === "h") type = "hash";
+  if (typeChar === "z") type = "zset";
+
+  if (parts[1] === "client") {
+    const server = parts[2];
+    if (typeChar === "s") {
+      const key = parts.slice(3).join(":");
+      return { type, server, key };
+    } else {
+      const name = parts[3];
+      const key = parts.slice(4).join(":");
+      return { type, server, key, name };
+    }
+  } else {
+    const server = "Local";
+    if (typeChar === "s") {
+      const key = parts.slice(1).join(":");
+      return { type, server, key };
+    } else {
+      const name = parts[1];
+      const key = parts.slice(2).join(":");
+      return { type, server, key, name };
+    }
+  }
+}
+
+async function validateApiKey(client: SSDiskDBClient, ip: string, serverId?: string, apiKey?: string): Promise<boolean> {
+  if (!apiKey) return false;
+  const db = (client as any).db;
+  const cleanIp = ip.startsWith("::ffff:") ? ip.substring(7) : ip;
+
+  // 1. Check by serverId
+  if (serverId) {
+    try {
+      const raw = await db.get("config:server:" + serverId);
+      if (raw) {
+        const data = JSON.parse(raw);
+        if (data.status === "blocked") return false;
+        if (data.apiKey === apiKey) return true;
+      }
+    } catch (e) {}
+  }
+
+  // 2. Check by IP
+  const ipsToCheck = [cleanIp, ip];
+  for (const checkIp of ipsToCheck) {
+    try {
+      const raw = await db.get("config:server:" + checkIp);
+      if (raw) {
+        const data = JSON.parse(raw);
+        if (data.status === "blocked") return false;
+        if (data.apiKey === apiKey) return true;
+      }
+    } catch (e) {}
+  }
+
+  return false;
 }
 
 // Function to generate the HTML for the dashboard
@@ -81,12 +149,17 @@ function getDashboardHtml(username: string): string {
       gap: 0.5rem;
     }
 
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
     .btn-primary {
       background-color: var(--accent-blue);
       color: white;
     }
 
-    .btn-primary:hover {
+    .btn-primary:hover:not(:disabled) {
       background-color: #2563eb;
     }
 
@@ -95,7 +168,7 @@ function getDashboardHtml(username: string): string {
       color: white;
     }
 
-    .btn-success:hover {
+    .btn-success:hover:not(:disabled) {
       background-color: #059669;
     }
 
@@ -104,7 +177,7 @@ function getDashboardHtml(username: string): string {
       color: white;
     }
 
-    .btn-danger:hover {
+    .btn-danger:hover:not(:disabled) {
       background-color: #dc2626;
     }
 
@@ -114,7 +187,7 @@ function getDashboardHtml(username: string): string {
       color: var(--text-main);
     }
 
-    .btn-secondary:hover {
+    .btn-secondary:hover:not(:disabled) {
       background-color: var(--card-bg);
     }
 
@@ -348,6 +421,61 @@ function getDashboardHtml(username: string): string {
     .toast.error {
       border-left-color: var(--accent-red);
     }
+
+    .spinner {
+      border: 2px solid rgba(255, 255, 255, 0.2);
+      border-left-color: currentColor;
+      border-radius: 50%;
+      width: 1rem;
+      height: 1rem;
+      animation: spin 0.8s linear infinite;
+      display: inline-block;
+      vertical-align: middle;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .tabs-container {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 0.5rem;
+    }
+
+    .tab-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      padding: 0.5rem 1rem;
+      border-radius: 0.375rem;
+      transition: all 0.2s ease;
+    }
+
+    .tab-btn:hover {
+      color: var(--text-main);
+      background-color: rgba(255, 255, 255, 0.05);
+    }
+
+    .tab-btn.active {
+      color: white;
+      background-color: var(--accent-blue);
+    }
+
+    .badge-online {
+      background-color: rgba(16, 185, 129, 0.2);
+      color: #34d399;
+    }
+
+    .badge-offline {
+      background-color: rgba(239, 68, 68, 0.2);
+      color: #f87171;
+    }
   </style>
 </head>
 <body>
@@ -358,7 +486,7 @@ function getDashboardHtml(username: string): string {
     </div>
     <div class="user-info">
       <span>User: <strong>${username}</strong></span>
-      <button class="btn btn-secondary" onclick="logout()">Logout</button>
+      <button class="btn btn-secondary" onclick="logout(this)">Logout</button>
     </div>
   </header>
 
@@ -378,35 +506,255 @@ function getDashboardHtml(username: string): string {
   </div>
 
   <div class="main-content">
-    <div class="toolbar">
-      <input type="text" class="search-input" id="search-bar" placeholder="Search keys..." oninput="filterKeys()">
-      <div style="display: flex; gap: 0.5rem;">
-        <button class="btn btn-secondary" onclick="loadKeys()">
-          Refresh
-        </button>
-        <button class="btn btn-success" onclick="openAddModal()">
-          Add Key
-        </button>
-        <button class="btn btn-danger" onclick="openFlushModal()">
-          Flush Cache
-        </button>
+    <div class="tabs-container">
+      <button class="tab-btn active" id="tab-btn-keys" onclick="switchTab('keys')">Cache Keys</button>
+      <button class="tab-btn" id="tab-btn-servers" onclick="switchTab('servers')">Allowed Servers</button>
+      <button class="tab-btn" id="tab-btn-docs" onclick="switchTab('docs')">Documentation Docs</button>
+    </div>
+
+    <div id="cache-keys-section">
+      <div class="toolbar">
+        <input type="text" class="search-input" id="search-bar" placeholder="Search keys..." oninput="filterKeys()">
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+          <select class="form-control" id="server-filter" onchange="filterKeys()" style="width: auto; min-width: 130px; margin-right: 0.5rem;">
+            <option value="all">All Servers</option>
+            <option value="Local">Local</option>
+          </select>
+          <button class="btn btn-secondary" id="btn-refresh" onclick="loadKeys(true)">
+            Refresh
+          </button>
+          <button class="btn btn-success" onclick="openAddModal()">
+            Add Key
+          </button>
+          <button class="btn btn-danger" onclick="openFlushModal()">
+            Flush Cache
+          </button>
+        </div>
+      </div>
+
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Server</th>
+              <th>Type</th>
+              <th>Key Name</th>
+              <th>Value / Details</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="keys-table-body">
+            <!-- Dynamically filled -->
+          </tbody>
+        </table>
       </div>
     </div>
 
-    <div class="table-container">
-      <table>
-        <thead>
-          <tr>
-            <th>Type</th>
-            <th>Key Name</th>
-            <th>Value / Details</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="keys-table-body">
-          <!-- Dynamically filled -->
-        </tbody>
-      </table>
+    <!-- Allowed Servers Section -->
+    <div id="allowed-servers-section" style="display: none;">
+      <div class="toolbar">
+        <div style="display: flex; gap: 0.5rem; width: 100%; max-width: 500px;">
+          <input type="text" class="form-control" id="new-server-address" placeholder="Server IP or Hostname (e.g. 10.0.0.5)">
+          <button class="btn btn-success" id="btn-add-server" onclick="addAllowedServer()" style="white-space: nowrap;">
+            Allow Server
+          </button>
+        </div>
+        <button class="btn btn-secondary" id="btn-refresh-servers" onclick="loadServers()">
+          Refresh Servers
+        </button>
+      </div>
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Server IP / Hostname</th>
+              <th>Status</th>
+              <th>API Key</th>
+              <th>Last Heartbeat</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="servers-table-body">
+            <!-- Dynamically filled -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Documentation Section -->
+    <div id="documentation-section" style="display: none; padding-top: 1rem; max-width: 900px; margin: 0 auto;">
+      <h2 style="font-size: 1.4rem; font-weight: 600; margin-bottom: 1.5rem; color: white; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem;">
+        SSDiskDB Integration &amp; Usage Guide
+      </h2>
+
+      <!-- Card 1: Local Mode & Encryption -->
+      <div style="background-color: var(--bg-color); border: 1px solid var(--border-color); border-radius: 0.5rem; padding: 1.5rem; margin-bottom: 1.5rem;">
+        <h3 style="font-size: 1.1rem; font-weight: 600; color: #60a5fa; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.5rem;">
+          <span style="background-color: rgba(59, 130, 246, 0.15); padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.8rem; font-family: monospace;">Local</span>
+          Local Storage &amp; Self-Encryption
+        </h3>
+        <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1rem;">
+          In Local Mode, SSDiskDB runs embedded directly inside your Node.js process using <strong>LevelDB</strong>. You can secure stored values on-disk transparently using AES-256-CBC encryption.
+        </p>
+        <pre style="background-color: rgba(0, 0, 0, 0.3); padding: 1rem; border-radius: 0.375rem; border: 1px solid var(--border-color); font-family: monospace; font-size: 0.85rem; color: #34d399; overflow-x: auto; margin-bottom: 0;">
+const { connect } = require("ssdiskdb");
+
+(async () => {
+  const db = await connect({
+    storagePath: "./secure-local-cache",
+    encryptionKey: "your-secret-aes-key", // Enables AES-256-CBC auto-encryption
+    startDashboard: true,               // Launches this dashboard UI console
+    dashboardPort: 8971
+  });
+
+  // Data is encrypted transparently on disk
+  await db.set("secure_key", { sensitiveData: "secret-value" });
+  console.log(await db.get("secure_key")); // Auto-decrypted object
+
+  await db.close();
+})();</pre>
+      </div>
+
+      <!-- Card 2: Remote VPC Mode -->
+      <div style="background-color: var(--bg-color); border: 1px solid var(--border-color); border-radius: 0.5rem; padding: 1.5rem; margin-bottom: 1.5rem;">
+        <h3 style="font-size: 1.1rem; font-weight: 600; color: #34d399; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.5rem;">
+          <span style="background-color: rgba(52, 211, 153, 0.15); padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.8rem; font-family: monospace;">VPC Remote</span>
+          Cross-Server Remote Cache
+        </h3>
+        <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1rem;">
+          When whitelisted, remote client servers can establish connection to this central cache. Connection performs a handshake check immediately at startup. Keys are isolated in a server-specific namespace (e.g. <code>s:client:server-a:key</code>).
+        </p>
+        <pre style="background-color: rgba(0, 0, 0, 0.3); padding: 1rem; border-radius: 0.375rem; border: 1px solid var(--border-color); font-family: monospace; font-size: 0.85rem; color: #34d399; overflow-x: auto; margin-bottom: 1rem;">
+const { connect } = require("ssdiskdb");
+
+(async () => {
+  // Remote client connection
+  const db = await connect({
+    remoteUrl: "http://&lt;central-server-ip&gt;:8971",
+    apiKey: "ssdb_c4dee067d4a23dd35da3270ddd5b2cc5", // Copy from Allowed Servers tab
+    serverId: "server-a"                          // Whitelisted Server ID
+  });
+
+  await db.set("cache_key", "value");
+  console.log(await db.get("cache_key"));
+
+  await db.close();
+})();</pre>
+        <div style="background-color: rgba(251, 191, 36, 0.08); border-left: 4px solid var(--accent-yellow); padding: 1rem; border-radius: 0.375rem; font-size: 0.875rem;">
+          <strong style="color: var(--accent-yellow); display: block; margin-bottom: 0.5rem;">💡 Where to find/configure connection parameters:</strong>
+          <ul style="list-style-type: none; padding-left: 0; display: flex; flex-direction: column; gap: 0.5rem;">
+            <li>🔗 <strong style="color: white;">remoteUrl:</strong> The address of this central cache dashboard server (e.g. <code>http://10.0.0.2:8971</code> or <code>http://localhost:8971</code>).</li>
+            <li>🔑 <strong style="color: white;">apiKey:</strong> The generated <code>ssdb_...</code> API key shown in the <strong>API Key</strong> column under the <strong>Allowed Servers</strong> tab.</li>
+            <li>🖥️ <strong style="color: white;">serverId:</strong> The exact whitelisted identifier registered in the <strong>Server IP / Hostname</strong> column under the <strong>Allowed Servers</strong> tab (e.g., <code>127.0.0.1</code>, <code>server-a</code>, or any label you whitelisted).</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- Card 3: CLI commands -->
+      <div style="background-color: var(--bg-color); border: 1px solid var(--border-color); border-radius: 0.5rem; padding: 1.5rem; margin-bottom: 1.5rem;">
+        <h3 style="font-size: 1.1rem; font-weight: 600; color: #fbbf24; margin-bottom: 0.75rem;">
+          Command-Line Interface (CLI)
+        </h3>
+        <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1rem;">
+          Manage admin credentials, whitelist connections, and start servers directly using NPX:
+        </p>
+        <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+          <div>
+            <strong style="font-size: 0.85rem; color: white; display: block; margin-bottom: 0.25rem;">Start Server:</strong>
+            <code style="background-color: rgba(0, 0, 0, 0.2); padding: 0.3rem 0.6rem; border-radius: 0.25rem; border: 1px solid var(--border-color); font-family: monospace; font-size: 0.8rem; color: #fbbf24;">npx ssdiskdb start --port 8971 --path ./ssdb-local-db</code>
+          </div>
+          <div>
+            <strong style="font-size: 0.85rem; color: white; display: block; margin-bottom: 0.25rem;">Change Admin Credentials:</strong>
+            <code style="background-color: rgba(0, 0, 0, 0.2); padding: 0.3rem 0.6rem; border-radius: 0.25rem; border: 1px solid var(--border-color); font-family: monospace; font-size: 0.8rem; color: #fbbf24;">npx ssdiskdb credentials --username myuser --password mysecurepass --path ./ssdb-local-db</code>
+          </div>
+          <div>
+            <strong style="font-size: 0.85rem; color: white; display: block; margin-bottom: 0.25rem;">Add Whitelisted Remote Client:</strong>
+            <code style="background-color: rgba(0, 0, 0, 0.2); padding: 0.3rem 0.6rem; border-radius: 0.25rem; border: 1px solid var(--border-color); font-family: monospace; font-size: 0.8rem; color: #fbbf24;">npx ssdiskdb server add server-a --path ./ssdb-local-db</code>
+          </div>
+          <div>
+            <strong style="font-size: 0.85rem; color: white; display: block; margin-bottom: 0.25rem;">List Remote Servers &amp; Keys:</strong>
+            <code style="background-color: rgba(0, 0, 0, 0.2); padding: 0.3rem 0.6rem; border-radius: 0.25rem; border: 1px solid var(--border-color); font-family: monospace; font-size: 0.8rem; color: #fbbf24;">npx ssdiskdb server list --path ./ssdb-local-db</code>
+          </div>
+          <div>
+            <strong style="font-size: 0.85rem; color: white; display: block; margin-bottom: 0.25rem;">Remove Client Server:</strong>
+            <code style="background-color: rgba(0, 0, 0, 0.2); padding: 0.3rem 0.6rem; border-radius: 0.25rem; border: 1px solid var(--border-color); font-family: monospace; font-size: 0.8rem; color: #fbbf24;">npx ssdiskdb server remove server-a --path ./ssdb-local-db</code>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 4: Operations API -->
+      <div style="background-color: var(--bg-color); border: 1px solid var(--border-color); border-radius: 0.5rem; padding: 1.5rem;">
+        <h3 style="font-size: 1.1rem; font-weight: 600; color: white; margin-bottom: 0.75rem;">
+          Supported Data Types
+        </h3>
+        <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1rem;">
+          SSDiskDB handles serialization and typing natively. All methods return standard Promises.
+        </p>
+        <div style="display: flex; flex-direction: column; gap: 1rem;">
+          <div>
+            <strong style="font-size: 0.85rem; color: #60a5fa; display: block; margin-bottom: 0.25rem;">Strings &amp; JSON:</strong>
+            <pre style="background-color: rgba(0, 0, 0, 0.2); padding: 0.75rem; border-radius: 0.25rem; border: 1px solid var(--border-color); font-family: monospace; font-size: 0.8rem; color: #f8fafc; margin: 0;">
+await db.set("key", { name: "Alice" });
+await db.get("key"); // returns { name: "Alice" }
+await db.exists("key"); // returns true
+await db.incr("counter", 5); // increments by 5
+await db.del("key");</pre>
+          </div>
+          <div>
+            <strong style="font-size: 0.85rem; color: #34d399; display: block; margin-bottom: 0.25rem;">Hashes (Maps):</strong>
+            <pre style="background-color: rgba(0, 0, 0, 0.2); padding: 0.75rem; border-radius: 0.25rem; border: 1px solid var(--border-color); font-family: monospace; font-size: 0.8rem; color: #f8fafc; margin: 0;">
+await db.hset("user:1", "name", "Manoj");
+await db.hget("user:1", "name"); // "Manoj"
+await db.hdel("user:1", "name");</pre>
+          </div>
+          <div>
+            <strong style="font-size: 0.85rem; color: #fbbf24; display: block; margin-bottom: 0.25rem;">Sorted Sets (ZSets):</strong>
+            <pre style="background-color: rgba(0, 0, 0, 0.2); padding: 0.75rem; border-radius: 0.25rem; border: 1px solid var(--border-color); font-family: monospace; font-size: 0.8rem; color: #f8fafc; margin: 0;">
+await db.zset("leaderboard", "player1", 99.5);
+await db.zget("leaderboard", "player1"); // 99.5
+await db.zdel("leaderboard", "player1");</pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 5: Whitelisting Guide -->
+      <div style="background-color: var(--bg-color); border: 1px solid var(--border-color); border-radius: 0.5rem; padding: 1.5rem; margin-top: 1.5rem;">
+        <h3 style="font-size: 1.1rem; font-weight: 600; color: #fbbf24; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.5rem;">
+          📋 How to use the Allowed Servers Section
+        </h3>
+        <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1rem;">
+          Whitelisting registers a client server on this central cache. The whitelist input is a simple string identifier, <strong>NOT a URL</strong>. It must match either the client's network IP address or the <code>serverId</code> label configured in the client connection.
+        </p>
+
+        <div style="display: grid; grid-template-columns: 1fr; md:grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem;">
+          <div style="background-color: rgba(239, 68, 68, 0.05); border: 1px solid rgba(239, 68, 68, 0.15); padding: 1rem; border-radius: 0.375rem;">
+            <strong style="color: #f87171; display: block; margin-bottom: 0.5rem; font-size: 0.85rem;">❌ INCORRECT Whitelist Inputs (Do NOT use):</strong>
+            <ul style="padding-left: 1.25rem; font-size: 0.8rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 0.4rem; list-style-type: disc;">
+              <li><code>http://localhost:5000</code> (No protocol, port numbers, or slash paths)</li>
+              <li><code>https://my-server.com/api</code> (No HTTPS schemes or sub-directories)</li>
+              <li><code>localhost:5000</code> (Do not append ports to hostnames/domains)</li>
+            </ul>
+          </div>
+          <div style="background-color: rgba(16, 185, 129, 0.05); border: 1px solid rgba(16, 185, 129, 0.15); padding: 1rem; border-radius: 0.375rem;">
+            <strong style="color: #34d399; display: block; margin-bottom: 0.5rem; font-size: 0.85rem;">✅ CORRECT Whitelist Inputs (Use these):</strong>
+            <ul style="padding-left: 1.25rem; font-size: 0.8rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 0.4rem; list-style-type: disc;">
+              <li><code>127.0.0.1</code> or <code>10.0.0.5</code> (Raw IP addresses)</li>
+              <li><code>my-web-server.com</code> or <code>localhost</code> (Raw hostnames/domain names)</li>
+              <li><code>server-a</code> or <code>subserver-1</code> (Custom Server ID labels)</li>
+            </ul>
+          </div>
+        </div>
+
+        <div style="background-color: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-color); padding: 1rem; border-radius: 0.375rem; font-size: 0.85rem; line-height: 1.5;">
+          <strong style="color: white; display: block; margin-bottom: 0.5rem;">🔒 How HTTPS &amp; Ports are handled:</strong>
+          <span style="color: var(--text-muted); display: block; margin-bottom: 0.5rem;">
+            - <strong>Secure Proxy (HTTPS)</strong>: If this central server is behind an HTTPS reverse proxy (e.g. Nginx, Caddy), client servers connect using <code>remoteUrl: "https://your-central-cache.com"</code>. However, the whitelisted key you register on the dashboard remains just the client's raw IP or <code>serverId</code> label (e.g., <code>server-a</code>) — never register proxy protocols or URLs.
+          </span>
+          <span style="color: var(--text-muted); display: block;">
+            - <strong>Subserver Ports</strong>: If you have a local subserver running on <code>localhost:5000</code> and want to connect it, whitelist <code>localhost</code> or a custom string like <code>subserver-5000</code> in this dashboard. On the subserver's connection code, pass <code>serverId: "localhost"</code> or <code>serverId: "subserver-5000"</code> (do not pass port numbers or URLs in <code>serverId</code>).
+          </span>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -444,7 +792,7 @@ function getDashboardHtml(username: string): string {
       </div>
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick="closeAddModal()">Cancel</button>
-        <button class="btn btn-success" onclick="saveKey()">Save Entry</button>
+        <button class="btn btn-success" id="btn-save" onclick="saveKey()">Save Entry</button>
       </div>
     </div>
   </div>
@@ -467,6 +815,18 @@ function getDashboardHtml(username: string): string {
     </div>
   </div>
 
+  <!-- Delete Confirmation Modal -->
+  <div class="modal-backdrop" id="delete-modal">
+    <div class="modal">
+      <div class="modal-title" style="color: var(--accent-red);">Delete Cache Entry?</div>
+      <p id="delete-modal-text" style="margin-bottom: 1.5rem; font-size: 0.9rem; color: var(--text-muted);"></p>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeDeleteModal()">Cancel</button>
+        <button class="btn btn-danger" id="btn-delete-confirm" onclick="confirmDeleteKey()">Delete Entry</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Flush Confirmation Modal -->
   <div class="modal-backdrop" id="flush-modal">
     <div class="modal">
@@ -474,7 +834,7 @@ function getDashboardHtml(username: string): string {
       <p style="margin-bottom: 1.5rem; font-size: 0.9rem; color: var(--text-muted);">This action will permanently delete all keys in the database. Credentials and configuration will be preserved.</p>
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick="closeFlushModal()">Cancel</button>
-        <button class="btn btn-danger" onclick="flushDatabase()">Flush Everything</button>
+        <button class="btn btn-danger" id="btn-flush" onclick="flushDatabase()">Flush Everything</button>
       </div>
     </div>
   </div>
@@ -484,7 +844,14 @@ function getDashboardHtml(username: string): string {
   <script>
     let allKeys = [];
 
-    async function loadKeys() {
+    async function loadKeys(isManual = false) {
+      const btn = document.getElementById('btn-refresh');
+      let originalHtml = '';
+      if (btn) {
+        originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Refreshing...';
+      }
       try {
         const res = await fetch('/api/keys');
         if (res.status === 401) {
@@ -492,9 +859,18 @@ function getDashboardHtml(username: string): string {
           return;
         }
         allKeys = await res.json();
-        renderKeysTable(allKeys);
+        updateServerFilterDropdown(allKeys);
+        filterKeys();
+        if (isManual) {
+          showToast('Database keys refreshed successfully');
+        }
       } catch (err) {
         showToast('Failed to load keys', true);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+        }
       }
     }
 
@@ -505,7 +881,7 @@ function getDashboardHtml(username: string): string {
       document.getElementById('stat-total-keys').innerText = keys.length;
 
       if (keys.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">No cache keys found.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 2rem;">No cache keys found.</td></tr>';
         return;
       }
 
@@ -513,27 +889,32 @@ function getDashboardHtml(username: string): string {
         const tr = document.createElement('tr');
         
         let typeBadge = '';
-        let displayKey = item.key;
-        let displayVal = JSON.stringify(item.value);
-
-        if (item.key.startsWith('s:')) {
+        if (item.type === 'string') {
           typeBadge = '<span class="badge badge-string">String</span>';
-          displayKey = item.key.substring(2);
-        } else if (item.key.startsWith('h:')) {
+        } else if (item.type === 'hash') {
           typeBadge = '<span class="badge badge-hash">Hash</span>';
-          displayKey = item.key.substring(2);
-        } else if (item.key.startsWith('z:')) {
+        } else if (item.type === 'zset') {
           typeBadge = '<span class="badge badge-zset">Sorted Set</span>';
-          displayKey = item.key.substring(2);
         }
 
+        let displayKey = item.key;
+        if (item.type === 'hash' || item.type === 'zset') {
+          displayKey = item.name + ' > ' + item.key;
+        }
+
+        const displayVal = JSON.stringify(item.value);
+        const serverBadge = item.server === 'Local' 
+          ? '<span class="badge badge-string" style="background-color: rgba(255,255,255,0.05); color: var(--text-muted);">Local</span>'
+          : '<span class="badge badge-hash" style="background-color: rgba(59, 130, 246, 0.1); color: #60a5fa;">' + escapeHtml(item.server) + '</span>';
+
         tr.innerHTML = \`
+          <td>\${serverBadge}</td>
           <td>\${typeBadge}</td>
           <td class="key-name">\${escapeHtml(displayKey)}</td>
           <td><div class="key-value">\${escapeHtml(displayVal)}</div></td>
           <td class="actions">
-            <button class="btn btn-secondary" style="padding: 0.25rem 0.5rem;" onclick="viewDetail('\${item.key}')">View</button>
-            <button class="btn btn-danger" style="padding: 0.25rem 0.5rem;" onclick="deleteKey('\${item.key}')">Delete</button>
+            <button class="btn btn-secondary" style="padding: 0.25rem 0.5rem;" onclick="viewDetail('\${item.rawKey}')">View</button>
+            <button class="btn btn-danger" style="padding: 0.25rem 0.5rem;" onclick="openDeleteModal('\${item.rawKey}')">Delete</button>
           </td>
         \`;
         tbody.appendChild(tr);
@@ -552,8 +933,278 @@ function getDashboardHtml(username: string): string {
 
     function filterKeys() {
       const query = document.getElementById('search-bar').value.toLowerCase();
-      const filtered = allKeys.filter(item => item.key.toLowerCase().includes(query));
+      const serverFilter = document.getElementById('server-filter').value;
+
+      const filtered = allKeys.filter(item => {
+        const matchesQuery = item.key.toLowerCase().includes(query) || (item.name && item.name.toLowerCase().includes(query));
+        const matchesServer = serverFilter === 'all' || item.server === serverFilter;
+        return matchesQuery && matchesServer;
+      });
+
       renderKeysTable(filtered);
+    }
+
+    function updateServerFilterDropdown(keys) {
+      const select = document.getElementById('server-filter');
+      if (!select) return;
+      const currentValue = select.value;
+      
+      const servers = new Set();
+      servers.add('Local');
+      keys.forEach(k => {
+        if (k.server && k.server !== 'Local') {
+          servers.add(k.server);
+        }
+      });
+
+      select.innerHTML = '<option value="all">All Servers</option>';
+      servers.forEach(srv => {
+        const opt = document.createElement('option');
+        opt.value = srv;
+        opt.innerText = srv;
+        select.appendChild(opt);
+      });
+
+      if (servers.has(currentValue) || currentValue === 'all') {
+        select.value = currentValue;
+      }
+    }
+
+    function switchTab(tabName) {
+      const keysSection = document.getElementById('cache-keys-section');
+      const serversSection = document.getElementById('allowed-servers-section');
+      const docsSection = document.getElementById('documentation-section');
+      const btnKeys = document.getElementById('tab-btn-keys');
+      const btnServers = document.getElementById('tab-btn-servers');
+      const btnDocs = document.getElementById('tab-btn-docs');
+
+      keysSection.style.display = 'none';
+      serversSection.style.display = 'none';
+      docsSection.style.display = 'none';
+      btnKeys.classList.remove('active');
+      btnServers.classList.remove('active');
+      btnDocs.classList.remove('active');
+
+      if (tabName === 'keys') {
+        keysSection.style.display = 'block';
+        btnKeys.classList.add('active');
+        loadKeys();
+      } else if (tabName === 'servers') {
+        serversSection.style.display = 'block';
+        btnServers.classList.add('active');
+        loadServers();
+      } else if (tabName === 'docs') {
+        docsSection.style.display = 'block';
+        btnDocs.classList.add('active');
+      }
+    }
+
+    async function loadServers() {
+      const btn = document.getElementById('btn-refresh-servers');
+      let originalHtml = '';
+      if (btn) {
+        originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Refreshing...';
+      }
+      try {
+        const res = await fetch('/api/servers');
+        if (res.status === 401) {
+          window.location.reload();
+          return;
+        }
+        const servers = await res.json();
+        renderServersTable(servers);
+      } catch (err) {
+        showToast('Failed to load servers', true);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+        }
+      }
+    }
+
+    function renderServersTable(servers) {
+      const tbody = document.getElementById('servers-table-body');
+      tbody.innerHTML = '';
+
+      if (servers.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 2rem;">No allowed servers registered.</td></tr>';
+        return;
+      }
+
+      servers.forEach(srv => {
+        const tr = document.createElement('tr');
+        let statusBadge = '';
+        if (srv.status === 'Online') {
+          statusBadge = '<span class="badge badge-online">Online</span>';
+        } else if (srv.status === 'Offline') {
+          statusBadge = '<span class="badge badge-offline">Offline</span>';
+        } else if (srv.status === 'Blocked') {
+          statusBadge = '<span class="badge badge-offline" style="background-color: rgba(239, 68, 68, 0.3); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.5);">Blocked</span>';
+        }
+
+        const blockBtnText = srv.blocked ? 'Allow Access' : 'Block';
+        const blockBtnClass = srv.blocked ? 'btn-success' : 'btn-secondary';
+        const blockBtnStyle = srv.blocked ? '' : 'border-color: var(--accent-red); color: #f87171;';
+
+        tr.innerHTML = \`
+          <td class="key-name">\${escapeHtml(srv.address)}</td>
+          <td>\${statusBadge}</td>
+          <td>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <code style="background-color: var(--bg-color); padding: 0.2rem 0.4rem; border-radius: 0.25rem; border: 1px solid var(--border-color); font-size: 0.8rem; font-family: monospace;">\${escapeHtml(srv.apiKey)}</code>
+              <button class="btn btn-secondary" style="padding: 0.1rem 0.3rem; font-size: 0.75rem;" onclick="copyToClipboard('\${srv.apiKey}')">Copy</button>
+            </div>
+          </td>
+          <td>\${escapeHtml(srv.lastHeartbeat)}</td>
+          <td class="actions">
+            <button class="btn \${blockBtnClass}" style="padding: 0.25rem 0.5rem; \${blockBtnStyle}" onclick="toggleBlockServer('\${srv.address}', this)">\${blockBtnText}</button>
+            <button class="btn btn-secondary" style="padding: 0.25rem 0.5rem;" onclick="reissueServerKey('\${srv.address}', this)">Reissue Key</button>
+            <button class="btn btn-danger" style="padding: 0.25rem 0.5rem;" onclick="deleteAllowedServer('\${srv.address}', this)">Remove</button>
+          </td>
+        \`;
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function toggleBlockServer(address, btn) {
+      let originalHtml = '';
+      if (btn) {
+        originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner" style="width: 0.75rem; height: 0.75rem; border-width: 1.5px;"></span>';
+      }
+      try {
+        const res = await fetch('/api/servers/toggle-block', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ address })
+        });
+        if (res.ok) {
+          showToast('Server access updated');
+          loadServers();
+        } else {
+          showToast('Failed to update server access', true);
+        }
+      } catch (err) {
+        showToast('Server error', true);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+        }
+      }
+    }
+
+    async function reissueServerKey(address, btn) {
+      if (!confirm('Are you sure you want to reissue the API Key for ' + address + '? The old key will immediately stop working.')) return;
+      let originalHtml = '';
+      if (btn) {
+        originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner" style="width: 0.75rem; height: 0.75rem; border-width: 1.5px;"></span>';
+      }
+      try {
+        const res = await fetch('/api/servers/reissue-key', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ address })
+        });
+        if (res.ok) {
+          showToast('API Key reissued successfully');
+          loadServers();
+        } else {
+          showToast('Failed to reissue key', true);
+        }
+      } catch (err) {
+        showToast('Server error', true);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+        }
+      }
+    }
+
+    function copyToClipboard(text) {
+      navigator.clipboard.writeText(text).then(() => {
+        showToast('API Key copied to clipboard');
+      }).catch(err => {
+        showToast('Failed to copy API Key', true);
+      });
+    }
+
+    async function addAllowedServer() {
+      const input = document.getElementById('new-server-address');
+      const address = input.value.trim();
+      if (!address) {
+        showToast('Please enter a server IP or Hostname', true);
+        return;
+      }
+
+      const btn = document.getElementById('btn-add-server');
+      let originalHtml = '';
+      if (btn) {
+        originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Adding...';
+      }
+
+      try {
+        const res = await fetch('/api/servers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ address })
+        });
+        if (res.ok) {
+          showToast('Server allowed successfully');
+          input.value = '';
+          loadServers();
+        } else {
+          showToast('Failed to allow server', true);
+        }
+      } catch (err) {
+        showToast('Server error during add', true);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+        }
+      }
+    }
+
+    async function deleteAllowedServer(address, btn) {
+      if (!confirm('Are you sure you want to remove ' + address + ' from allowed servers?')) return;
+
+      let originalHtml = '';
+      if (btn) {
+        originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner" style="width: 0.75rem; height: 0.75rem; border-width: 1.5px;"></span> Removing...';
+      }
+
+      try {
+        const res = await fetch('/api/servers', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ address })
+        });
+        if (res.ok) {
+          showToast('Server access removed');
+          loadServers();
+        } else {
+          showToast('Failed to remove server', true);
+        }
+      } catch (err) {
+        showToast('Server error during remove', true);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+        }
+      }
     }
 
     function showToast(message, isError = false) {
@@ -660,6 +1311,14 @@ function getDashboardHtml(username: string): string {
         payload = { type, name: zsetName, key: keyName, score: parseFloat(score) };
       }
 
+      const btn = document.getElementById('btn-save');
+      let originalHtml = '';
+      if (btn) {
+        originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Saving...';
+      }
+
       try {
         const res = await fetch('/api/keys', {
           method: 'POST',
@@ -676,34 +1335,66 @@ function getDashboardHtml(username: string): string {
         }
       } catch (err) {
         showToast('Server error during save', true);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+        }
       }
     }
 
-    async function deleteKey(prefixedKey) {
-      if (!confirm('Are you sure you want to delete ' + prefixedKey + '?')) return;
+    let keyToDelete = null;
+
+    function openDeleteModal(prefixedKey) {
+      keyToDelete = prefixedKey;
+      document.getElementById('delete-modal-text').innerText = 'Are you sure you want to delete "' + prefixedKey + '"? This action cannot be undone.';
+      document.getElementById('delete-modal').style.display = 'flex';
+    }
+
+    function closeDeleteModal() {
+      document.getElementById('delete-modal').style.display = 'none';
+      keyToDelete = null;
+    }
+
+    async function confirmDeleteKey() {
+      if (!keyToDelete) return;
+
+      const btn = document.getElementById('btn-delete-confirm');
+      let originalHtml = '';
+      if (btn) {
+        originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Deleting...';
+      }
 
       try {
         const res = await fetch('/api/keys', {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ key: prefixedKey })
+          body: JSON.stringify({ key: keyToDelete })
         });
         if (res.ok) {
           showToast('Key deleted');
+          closeDeleteModal();
           loadKeys();
         } else {
           showToast('Failed to delete key', true);
         }
       } catch (err) {
         showToast('Server error during delete', true);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+        }
       }
     }
 
     function viewDetail(prefixedKey) {
-      const item = allKeys.find(k => k.key === prefixedKey);
+      const item = allKeys.find(k => k.rawKey === prefixedKey);
       if (!item) return;
 
-      document.getElementById('detail-full-key').value = item.key;
+      document.getElementById('detail-full-key').value = item.rawKey;
       document.getElementById('detail-value').innerText = JSON.stringify(item.value, null, 2);
       document.getElementById('detail-modal').style.display = 'flex';
     }
@@ -720,6 +1411,14 @@ function getDashboardHtml(username: string): string {
     }
 
     async function flushDatabase() {
+      const btn = document.getElementById('btn-flush');
+      let originalHtml = '';
+      if (btn) {
+        originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Flushing...';
+      }
+
       try {
         const res = await fetch('/api/flush', { method: 'POST' });
         if (res.ok) {
@@ -731,18 +1430,35 @@ function getDashboardHtml(username: string): string {
         }
       } catch (err) {
         showToast('Server error during flush', true);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+        }
       }
     }
 
-    function logout() {
-      // Browsers do not have a built-in Basic Auth logout,
-      // but making a request with invalid credentials triggers a reset.
+    function logout(btn) {
+      let originalHtml = '';
+      if (btn) {
+        originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner" style="width: 0.75rem; height: 0.75rem; border-width: 1.5px;"></span> Logging out...';
+      }
       var xmlhttp = new XMLHttpRequest();
       xmlhttp.open("GET", "/api/keys", true, "logout", "logout");
       xmlhttp.send();
       xmlhttp.onreadystatechange = function() {
-        if (xmlhttp.status == 401) {
-          window.location.reload();
+        if (xmlhttp.readyState === 4) {
+          if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+          }
+          if (xmlhttp.status === 401) {
+            window.location.reload();
+          } else {
+            window.location.reload();
+          }
         }
       }
     }
@@ -761,39 +1477,144 @@ export function startDashboardServer(
 ): Promise<DashboardServer> {
   return new Promise((resolve, reject) => {
     const server = http.createServer(async (req, res) => {
-      // 1. Basic Auth check
-      const authHeader = req.headers.authorization;
-      if (!authHeader || !authHeader.startsWith("Basic ")) {
-        res.writeHead(401, {
-          "WWW-Authenticate": 'Basic realm="SSDiskDB Dashboard"',
-          "Content-Type": "text/plain"
-        });
-        res.end("Unauthorized");
-        return;
-      }
+      // Response compression interception using native Node.js zlib
+      const originalWriteHead = res.writeHead;
+      const originalEnd = res.end;
+      const chunks: Buffer[] = [];
+      let capturedStatusCode = 200;
+      let capturedHeaders: any = {};
 
-      // Parse credentials
-      const token = authHeader.substring(6);
-      const decoded = Buffer.from(token, "base64").toString("utf8");
-      const parts = decoded.split(":");
-      const reqUsername = parts[0];
-      const reqPassword = parts[1] || "";
+      res.writeHead = function (statusCode: any, reasonOrHeaders?: any, objHeaders?: any) {
+        capturedStatusCode = statusCode;
+        const headers = objHeaders || reasonOrHeaders;
+        if (headers) {
+          capturedHeaders = { ...capturedHeaders, ...headers };
+        }
+        return res;
+      } as any;
 
-      // Load stored credentials
-      const creds = await getCredentials();
-      const inputHash = crypto.createHash("sha256").update(reqPassword).digest("hex");
+      res.end = function (chunk?: any, encodingOrCb?: any, cb?: any) {
+        let callback = cb;
+        if (typeof encodingOrCb === "function") {
+          callback = encodingOrCb;
+        }
 
-      if (reqUsername !== creds.username || inputHash !== creds.passwordHash) {
-        res.writeHead(401, {
-          "WWW-Authenticate": 'Basic realm="SSDiskDB Dashboard"',
-          "Content-Type": "text/plain"
-        });
-        res.end("Unauthorized");
-        return;
-      }
+        if (chunk) {
+          const buf = typeof chunk === "string" 
+            ? Buffer.from(chunk, (typeof encodingOrCb === "string" ? encodingOrCb : "utf8") as any) 
+            : chunk;
+          chunks.push(buf);
+        }
+
+        const bodyBuffer = Buffer.concat(chunks);
+        const acceptEncoding = req.headers["accept-encoding"] as string | undefined || "";
+        const allHeaders = { ...res.getHeaders(), ...capturedHeaders };
+        
+        // Normalize headers to check compressibility
+        const normalizedHeaders: Record<string, string> = {};
+        for (const k of Object.keys(allHeaders)) {
+          normalizedHeaders[k.toLowerCase()] = String(allHeaders[k]);
+        }
+
+        const contentType = normalizedHeaders["content-type"] || "";
+        const isCompressible = contentType.includes("json") || 
+                              contentType.includes("html") || 
+                              contentType.includes("text") || 
+                              contentType.includes("javascript") || 
+                              contentType.includes("css");
+
+        if (bodyBuffer.length < 1024 || !isCompressible || normalizedHeaders["content-encoding"]) {
+          originalWriteHead.call(res, capturedStatusCode, allHeaders);
+          return originalEnd.call(res, bodyBuffer, callback);
+        }
+
+        // Apply compression: Brotli > Gzip > Deflate
+        if (acceptEncoding.includes("br") && typeof zlib.brotliCompress === "function") {
+          zlib.brotliCompress(bodyBuffer, (err, compressed) => {
+            if (err) {
+              originalWriteHead.call(res, capturedStatusCode, allHeaders);
+              return originalEnd.call(res, bodyBuffer, callback);
+            }
+            delete allHeaders["content-length"];
+            delete allHeaders["Content-Length"];
+            allHeaders["Content-Encoding"] = "br";
+            allHeaders["Content-Length"] = String(compressed.length);
+            originalWriteHead.call(res, capturedStatusCode, allHeaders);
+            return originalEnd.call(res, compressed, callback);
+          });
+        } else if (acceptEncoding.includes("gzip")) {
+          zlib.gzip(bodyBuffer, (err, compressed) => {
+            if (err) {
+              originalWriteHead.call(res, capturedStatusCode, allHeaders);
+              return originalEnd.call(res, bodyBuffer, callback);
+            }
+            delete allHeaders["content-length"];
+            delete allHeaders["Content-Length"];
+            allHeaders["Content-Encoding"] = "gzip";
+            allHeaders["Content-Length"] = String(compressed.length);
+            originalWriteHead.call(res, capturedStatusCode, allHeaders);
+            return originalEnd.call(res, compressed, callback);
+          });
+        } else if (acceptEncoding.includes("deflate")) {
+          zlib.deflate(bodyBuffer, (err, compressed) => {
+            if (err) {
+              originalWriteHead.call(res, capturedStatusCode, allHeaders);
+              return originalEnd.call(res, bodyBuffer, callback);
+            }
+            delete allHeaders["content-length"];
+            delete allHeaders["Content-Length"];
+            allHeaders["Content-Encoding"] = "deflate";
+            allHeaders["Content-Length"] = String(compressed.length);
+            originalWriteHead.call(res, capturedStatusCode, allHeaders);
+            return originalEnd.call(res, compressed, callback);
+          });
+        } else {
+          originalWriteHead.call(res, capturedStatusCode, allHeaders);
+          return originalEnd.call(res, bodyBuffer, callback);
+        }
+        return res;
+      } as any;
 
       const url = req.url || "/";
       const method = req.method || "GET";
+
+      // 1. Check if it's a remote client API request
+      const isClientApi = ["/api/handshake", "/api/heartbeat", "/api/rpc"].includes(url);
+
+      let creds = { username: "manoj" };
+      if (!isClientApi) {
+        // Dashboard Basic Auth check
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith("Basic ")) {
+          res.writeHead(401, {
+            "WWW-Authenticate": 'Basic realm="SSDiskDB Dashboard"',
+            "Content-Type": "text/plain"
+          });
+          res.end("Unauthorized");
+          return;
+        }
+
+        // Parse credentials
+        const token = authHeader.substring(6);
+        const decoded = Buffer.from(token, "base64").toString("utf8");
+        const parts = decoded.split(":");
+        const reqUsername = parts[0];
+        const reqPassword = parts[1] || "";
+
+        // Load stored credentials
+        const storedCreds = await getCredentials();
+        creds = storedCreds;
+        const inputHash = crypto.createHash("sha256").update(reqPassword).digest("hex");
+
+        if (reqUsername !== storedCreds.username || inputHash !== storedCreds.passwordHash) {
+          res.writeHead(401, {
+            "WWW-Authenticate": 'Basic realm="SSDiskDB Dashboard"',
+            "Content-Type": "text/plain"
+          });
+          res.end("Unauthorized");
+          return;
+        }
+      }
 
       // Serve UI
       if (url === "/" || url === "/index.html") {
@@ -807,10 +1628,21 @@ export function startDashboardServer(
         try {
           if (typeof (client as any).getAllKeys === "function") {
             const list = await (client as any).getAllKeys();
+            const parsedList = list.map((item: any) => {
+              const parsed = parseKey(item.key);
+              return {
+                type: parsed.type,
+                server: parsed.server,
+                key: parsed.key,
+                name: parsed.name || "",
+                fullName: parsed.name ? `${parsed.name}:${parsed.key}` : parsed.key,
+                rawKey: item.key,
+                value: item.value
+              };
+            });
             res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify(list));
+            res.end(JSON.stringify(parsedList));
           } else {
-            // Fallback if client doesn't support list (e.g. remote SSDB without keys support in wrapper)
             res.writeHead(501, { "Content-Type": "text/plain" });
             res.end("Not implemented for this connection type");
           }
@@ -818,6 +1650,291 @@ export function startDashboardServer(
           res.writeHead(500, { "Content-Type": "text/plain" });
           res.end("Error fetching keys: " + e.message);
         }
+        return;
+      }
+
+      // API: Client Handshake
+      if (url === "/api/handshake" && method === "GET") {
+        const apiKey = req.headers["x-api-key"] as string | undefined;
+        const serverId = req.headers["x-server-id"] as string | undefined;
+        const clientIp = req.socket.remoteAddress || "";
+
+        const allowed = await validateApiKey(client, clientIp, serverId, apiKey);
+        if (!allowed) {
+          res.writeHead(403, { "Content-Type": "text/plain" });
+          res.end("Forbidden: Invalid API Key or Server ID");
+          return;
+        }
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ok", message: "Handshake successful" }));
+        return;
+      }
+
+      // API: Client Heartbeat
+      if (url === "/api/heartbeat" && method === "POST") {
+        let body = "";
+        req.on("data", chunk => { body += chunk; });
+        req.on("end", async () => {
+          try {
+            const payload = JSON.parse(body);
+            const serverId = payload.serverId;
+            const apiKey = req.headers["x-api-key"] as string | undefined;
+            const clientIp = req.socket.remoteAddress || "";
+
+            const allowed = await validateApiKey(client, clientIp, serverId, apiKey);
+            if (!allowed) {
+              res.writeHead(403, { "Content-Type": "text/plain" });
+              res.end("Forbidden: Client server not allowed");
+              return;
+            }
+
+            activeHeartbeats.set(serverId, Date.now());
+            if (clientIp) {
+              activeHeartbeats.set(clientIp.startsWith("::ffff:") ? clientIp.substring(7) : clientIp, Date.now());
+            }
+
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ status: "ok" }));
+          } catch (e: any) {
+            res.writeHead(500, { "Content-Type": "text/plain" });
+            res.end("Error: " + e.message);
+          }
+        });
+        return;
+      }
+
+      // API: Client RPC Endpoint
+      if (url === "/api/rpc" && method === "POST") {
+        let body = "";
+        req.on("data", chunk => { body += chunk; });
+        req.on("end", async () => {
+          try {
+            const payload = JSON.parse(body);
+            const { action, args } = payload;
+            const serverId = req.headers["x-server-id"] as string | undefined;
+            const apiKey = req.headers["x-api-key"] as string | undefined;
+            const clientIp = req.socket.remoteAddress || "";
+
+            const allowed = await validateApiKey(client, clientIp, serverId, apiKey);
+            if (!allowed) {
+              res.writeHead(403, { "Content-Type": "text/plain" });
+              res.end("Forbidden: Client server not allowed");
+              return;
+            }
+
+            // Apply prefix namespacing if serverId is present and is not 'Local'
+            if (serverId && serverId !== "Local") {
+              if (["set", "get", "del", "exists", "incr"].includes(action)) {
+                args[0] = `client:${serverId}:${args[0]}`;
+              } else if (["hset", "hget", "hdel"].includes(action)) {
+                args[0] = `client:${serverId}:${args[0]}`;
+              } else if (["zset", "zget", "zdel"].includes(action)) {
+                args[0] = `client:${serverId}:${args[0]}`;
+              } else if (action === "flush") {
+                const batch = (client as any).db.batch();
+                for await (const key of (client as any).db.keys()) {
+                  if (
+                    key.startsWith(`s:client:${serverId}:`) ||
+                    key.startsWith(`h:client:${serverId}:`) ||
+                    key.startsWith(`z:client:${serverId}:`)
+                  ) {
+                    batch.del(key);
+                  }
+                }
+                await batch.write();
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ result: true }));
+                return;
+              } else if (action === "getAllKeys") {
+                const list = await client.getAllKeys();
+                const filtered = list
+                  .filter(item => {
+                    return (
+                      item.key.startsWith(`s:client:${serverId}:`) ||
+                      item.key.startsWith(`h:client:${serverId}:`) ||
+                      item.key.startsWith(`z:client:${serverId}:`)
+                    );
+                  })
+                  .map(item => {
+                    let cleanKey = item.key;
+                    if (item.key.startsWith(`s:client:${serverId}:`)) cleanKey = item.key.substring(`s:client:${serverId}:`.length);
+                    if (item.key.startsWith(`h:client:${serverId}:`)) cleanKey = item.key.substring(`h:client:${serverId}:`.length);
+                    if (item.key.startsWith(`z:client:${serverId}:`)) cleanKey = item.key.substring(`z:client:${serverId}:`.length);
+                    return { key: cleanKey, value: item.value };
+                  });
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ result: filtered }));
+                return;
+              }
+            }
+
+            if (typeof (client as any)[action] === "function") {
+              const result = await (client as any)[action](...args);
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ result }));
+            } else {
+              res.writeHead(400, { "Content-Type": "text/plain" });
+              res.end(`Unknown action: ${action}`);
+            }
+          } catch (e: any) {
+            res.writeHead(500, { "Content-Type": "text/plain" });
+            res.end("RPC Error: " + e.message);
+          }
+        });
+        return;
+      }
+
+      // API: Get Allowed Servers List
+      if (url === "/api/servers" && method === "GET") {
+        try {
+          const db = (client as any).db;
+          const allowed: { address: string; status: "Online" | "Offline" | "Blocked"; blocked: boolean; apiKey: string; lastHeartbeat: string }[] = [];
+          for await (const [key, val] of db.iterator({ gte: "config:server:", lte: "config:server:\xff" })) {
+            const addr = key.substring("config:server:".length);
+            const data = JSON.parse(val);
+            const lastHb = activeHeartbeats.get(addr);
+            const isOnline = lastHb && (Date.now() - lastHb < 30000);
+            const isBlocked = data.status === "blocked";
+
+            let status: "Online" | "Offline" | "Blocked" = isOnline ? "Online" : "Offline";
+            if (isBlocked) {
+              status = "Blocked";
+            }
+
+            allowed.push({
+              address: addr,
+              status,
+              blocked: isBlocked,
+              apiKey: data.apiKey || "",
+              lastHeartbeat: lastHb ? new Date(lastHb).toISOString() : "Never"
+            });
+          }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(allowed));
+        } catch (e: any) {
+          res.writeHead(500, { "Content-Type": "text/plain" });
+          res.end("Error: " + e.message);
+        }
+        return;
+      }
+
+      // API: Add Allowed Server
+      if (url === "/api/servers" && method === "POST") {
+        let body = "";
+        req.on("data", chunk => { body += chunk; });
+        req.on("end", async () => {
+          try {
+            const payload = JSON.parse(body);
+            const address = payload.address;
+            if (!address) {
+              res.writeHead(400, { "Content-Type": "text/plain" });
+              res.end("Address is required");
+              return;
+            }
+            const db = (client as any).db;
+            const apiKey = "ssdb_" + crypto.randomBytes(16).toString("hex");
+            await db.put("config:server:" + address, JSON.stringify({ registeredAt: Date.now(), apiKey, status: "allowed" }));
+            res.writeHead(200, { "Content-Type": "text/plain" });
+            res.end("OK");
+          } catch (e: any) {
+            res.writeHead(500, { "Content-Type": "text/plain" });
+            res.end("Error: " + e.message);
+          }
+        });
+        return;
+      }
+
+      // API: Remove Allowed Server
+      if (url === "/api/servers" && method === "DELETE") {
+        let body = "";
+        req.on("data", chunk => { body += chunk; });
+        req.on("end", async () => {
+          try {
+            const payload = JSON.parse(body);
+            const address = payload.address;
+            if (!address) {
+              res.writeHead(400, { "Content-Type": "text/plain" });
+              res.end("Address is required");
+              return;
+            }
+            const db = (client as any).db;
+            await db.del("config:server:" + address);
+            activeHeartbeats.delete(address);
+            res.writeHead(200, { "Content-Type": "text/plain" });
+            res.end("OK");
+          } catch (e: any) {
+            res.writeHead(500, { "Content-Type": "text/plain" });
+            res.end("Error: " + e.message);
+          }
+        });
+        return;
+      }
+
+      // API: Toggle Block/Restrict Server
+      if (url === "/api/servers/toggle-block" && method === "POST") {
+        let body = "";
+        req.on("data", chunk => { body += chunk; });
+        req.on("end", async () => {
+          try {
+            const payload = JSON.parse(body);
+            const address = payload.address;
+            if (!address) {
+              res.writeHead(400, { "Content-Type": "text/plain" });
+              res.end("Address is required");
+              return;
+            }
+            const db = (client as any).db;
+            const raw = await db.get("config:server:" + address);
+            if (!raw) {
+              res.writeHead(404, { "Content-Type": "text/plain" });
+              res.end("Server not found");
+              return;
+            }
+            const data = JSON.parse(raw);
+            data.status = (data.status === "blocked") ? "allowed" : "blocked";
+            await db.put("config:server:" + address, JSON.stringify(data));
+            res.writeHead(200, { "Content-Type": "text/plain" });
+            res.end("OK");
+          } catch (e: any) {
+            res.writeHead(500, { "Content-Type": "text/plain" });
+            res.end("Error: " + e.message);
+          }
+        });
+        return;
+      }
+
+      // API: Reissue API Key
+      if (url === "/api/servers/reissue-key" && method === "POST") {
+        let body = "";
+        req.on("data", chunk => { body += chunk; });
+        req.on("end", async () => {
+          try {
+            const payload = JSON.parse(body);
+            const address = payload.address;
+            if (!address) {
+              res.writeHead(400, { "Content-Type": "text/plain" });
+              res.end("Address is required");
+              return;
+            }
+            const db = (client as any).db;
+            const raw = await db.get("config:server:" + address);
+            if (!raw) {
+              res.writeHead(404, { "Content-Type": "text/plain" });
+              res.end("Server not found");
+              return;
+            }
+            const data = JSON.parse(raw);
+            const newKey = "ssdb_" + crypto.randomBytes(16).toString("hex");
+            data.apiKey = newKey;
+            await db.put("config:server:" + address, JSON.stringify(data));
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ apiKey: newKey }));
+          } catch (e: any) {
+            res.writeHead(500, { "Content-Type": "text/plain" });
+            res.end("Error: " + e.message);
+          }
+        });
         return;
       }
 

@@ -32,6 +32,11 @@ export interface ConnectOptions {
   encryptionKey?: string;
   startDashboard?: boolean;
   dashboardPort?: number;
+  remoteUrl?: string;
+  username?: string;
+  password?: string;
+  serverId?: string;
+  apiKey?: string;
 }
 
 function serialize(value: any): string {
@@ -221,8 +226,8 @@ class LocalSSDBClient implements SSDiskDBClient {
   }
 
   async getCredentials(): Promise<{ username: string; passwordHash: string }> {
-    const defaultHash = crypto.createHash("sha256").update("admin").digest("hex");
-    let username = "admin";
+    const defaultHash = crypto.createHash("sha256").update("manoj").digest("hex");
+    let username = "manoj";
     let passwordHash = defaultHash;
     try {
       const u = await this.db.get("config:username");
@@ -251,6 +256,169 @@ class LocalSSDBClient implements SSDiskDBClient {
   }
 }
 
+class RemoteSSDiskDBClient implements SSDiskDBClient {
+  private remoteUrl: string;
+  private apiKey: string;
+  private serverId: string;
+  private heartbeatInterval?: NodeJS.Timeout;
+
+  constructor(remoteUrl: string, apiKey: string, serverId: string) {
+    this.remoteUrl = remoteUrl.replace(/\/$/, "");
+    this.apiKey = apiKey;
+    this.serverId = serverId;
+  }
+
+  async handshake(): Promise<void> {
+    try {
+      const res = await fetch(`${this.remoteUrl}/api/handshake`, {
+        method: "GET",
+        headers: {
+          "X-API-Key": this.apiKey,
+          "X-Server-Id": this.serverId
+        }
+      });
+      if (res.status === 403) {
+        throw new Error(`Forbidden: Invalid API Key or Server ID ("${this.serverId}")`);
+      }
+      if (!res.ok) {
+        throw new Error(`Handshake failed: Server returned ${res.status}`);
+      }
+      this.startHeartbeat();
+    } catch (err: any) {
+      if (err.message.includes("Forbidden") || err.message.includes("Handshake")) {
+        throw err;
+      }
+      throw new Error(`Connection check failed: Central server is unreachable at ${this.remoteUrl} (${err.message})`);
+    }
+  }
+
+  private startHeartbeat() {
+    this.sendHeartbeat().catch(err => {
+      console.error(`[SSDiskDB Client] Initial heartbeat failed: ${err.message}`);
+    });
+    this.heartbeatInterval = setInterval(() => {
+      this.sendHeartbeat().catch(err => {
+        console.error(`[SSDiskDB Client] Periodic heartbeat failed: ${err.message}`);
+      });
+    }, 10000);
+  }
+
+  private async sendHeartbeat(): Promise<void> {
+    try {
+      const res = await fetch(`${this.remoteUrl}/api/heartbeat`, {
+        method: "POST",
+        headers: {
+          "X-API-Key": this.apiKey,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ serverId: this.serverId })
+      });
+      if (res.status === 403) {
+        console.warn(`[SSDiskDB Client] WARNING: This client server ("${this.serverId}") is not authorized/registered on the central cache server.`);
+      } else if (!res.ok) {
+        const text = await res.text();
+        console.warn(`[SSDiskDB Client] Heartbeat server error: ${text}`);
+      }
+    } catch (err: any) {
+      console.warn(`[SSDiskDB Client] Heartbeat network error: ${err.message}`);
+    }
+  }
+
+  private async request(action: string, args: any[]): Promise<any> {
+    const res = await fetch(`${this.remoteUrl}/api/rpc`, {
+      method: "POST",
+      headers: {
+        "X-API-Key": this.apiKey,
+        "X-Server-Id": this.serverId,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ action, args })
+    });
+
+    if (res.status === 403) {
+      throw new Error(`Connection Forbidden: This client server ("${this.serverId}") is not authorized/registered on the central cache server.`);
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`RPC server error: ${text}`);
+    }
+
+    const json = await res.json();
+    return json.result;
+  }
+
+  async set(key: string, value: any): Promise<any> {
+    return this.request("set", [key, value]);
+  }
+
+  async get(key: string): Promise<any> {
+    return this.request("get", [key]);
+  }
+
+  async del(key: string): Promise<any> {
+    return this.request("del", [key]);
+  }
+
+  async exists(key: string): Promise<boolean> {
+    return this.request("exists", [key]);
+  }
+
+  async incr(key: string, num: number = 1): Promise<number> {
+    return this.request("incr", [key, num]);
+  }
+
+  async hset(name: string, key: string, value: any): Promise<any> {
+    return this.request("hset", [name, key, value]);
+  }
+
+  async hget(name: string, key: string): Promise<any> {
+    return this.request("hget", [name, key]);
+  }
+
+  async hdel(name: string, key: string): Promise<any> {
+    return this.request("hdel", [name, key]);
+  }
+
+  async zset(name: string, key: string, score: number): Promise<any> {
+    return this.request("zset", [name, key, score]);
+  }
+
+  async zget(name: string, key: string): Promise<any> {
+    return this.request("zget", [name, key]);
+  }
+
+  async zdel(name: string, key: string): Promise<any> {
+    return this.request("zdel", [name, key]);
+  }
+
+  async close(): Promise<void> {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = undefined;
+    }
+  }
+
+  async startDashboard(port?: number): Promise<void> {
+    throw new Error("Method not supported on remote client connection");
+  }
+
+  async getAllKeys(): Promise<{ key: string; value: any }[]> {
+    return this.request("getAllKeys", []);
+  }
+
+  async flush(): Promise<void> {
+    return this.request("flush", []);
+  }
+
+  async setCredentials(username: string, passwordHash: string): Promise<void> {
+    throw new Error("Method not supported on remote client connection");
+  }
+
+  async getCredentials(): Promise<{ username: string; passwordHash: string }> {
+    throw new Error("Method not supported on remote client connection");
+  }
+}
+
 export async function connect(
   pathOrOptions?: string | ConnectOptions,
   options?: ConnectOptions
@@ -259,6 +427,9 @@ export async function connect(
   let encryptionKey: string | undefined;
   let startDashboard = false;
   let dashboardPort = 8971;
+  let remoteUrl: string | undefined;
+  let apiKey: string | undefined;
+  let serverId = "Local";
 
   if (typeof pathOrOptions === "string") {
     storagePath = pathOrOptions;
@@ -266,12 +437,27 @@ export async function connect(
       if (options.encryptionKey) encryptionKey = options.encryptionKey;
       if (options.startDashboard) startDashboard = options.startDashboard;
       if (options.dashboardPort) dashboardPort = options.dashboardPort;
+      if (options.remoteUrl) remoteUrl = options.remoteUrl;
+      if (options.apiKey) apiKey = options.apiKey;
+      if (options.serverId) serverId = options.serverId;
     }
   } else if (pathOrOptions && typeof pathOrOptions === "object") {
     if (pathOrOptions.storagePath) storagePath = pathOrOptions.storagePath;
     if (pathOrOptions.encryptionKey) encryptionKey = pathOrOptions.encryptionKey;
     if (pathOrOptions.startDashboard) startDashboard = pathOrOptions.startDashboard;
     if (pathOrOptions.dashboardPort) dashboardPort = pathOrOptions.dashboardPort;
+    if (pathOrOptions.remoteUrl) remoteUrl = pathOrOptions.remoteUrl;
+    if (pathOrOptions.apiKey) apiKey = pathOrOptions.apiKey;
+    if (pathOrOptions.serverId) serverId = pathOrOptions.serverId;
+  }
+
+  if (remoteUrl) {
+    if (!apiKey) {
+      throw new Error("apiKey is required for remote connections");
+    }
+    const client = new RemoteSSDiskDBClient(remoteUrl, apiKey, serverId);
+    await client.handshake();
+    return client;
   }
 
   const levelDb = new Level(storagePath);

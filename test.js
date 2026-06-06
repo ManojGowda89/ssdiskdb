@@ -114,7 +114,7 @@ test("SSDiskDB Local Mode Integration Tests", async (t) => {
 
     // 2. Authenticated request (HTML)
     const res2 = await fetch(`http://localhost:${dashboardPort}/`, {
-      headers: getAuthHeader("admin", "admin")
+      headers: getAuthHeader("manoj", "manoj")
     });
     assert.strictEqual(res2.status, 200);
     const html = await res2.text();
@@ -122,7 +122,7 @@ test("SSDiskDB Local Mode Integration Tests", async (t) => {
 
     // 3. Authenticated keys API (empty)
     const res3 = await fetch(`http://localhost:${dashboardPort}/api/keys`, {
-      headers: getAuthHeader("admin", "admin")
+      headers: getAuthHeader("manoj", "manoj")
     });
     assert.strictEqual(res3.status, 200);
     const keys = await res3.json();
@@ -132,7 +132,7 @@ test("SSDiskDB Local Mode Integration Tests", async (t) => {
     const res4 = await fetch(`http://localhost:${dashboardPort}/api/keys`, {
       method: "POST",
       headers: {
-        ...getAuthHeader("admin", "admin"),
+        ...getAuthHeader("manoj", "manoj"),
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
@@ -149,19 +149,19 @@ test("SSDiskDB Local Mode Integration Tests", async (t) => {
 
     // 5. Get keys listing through API
     const res5 = await fetch(`http://localhost:${dashboardPort}/api/keys`, {
-      headers: getAuthHeader("admin", "admin")
+      headers: getAuthHeader("manoj", "manoj")
     });
     assert.strictEqual(res5.status, 200);
     const keys2 = await res5.json();
     assert.strictEqual(keys2.length, 1);
-    assert.strictEqual(keys2[0].key, "s:dashboard_test_key");
+    assert.strictEqual(keys2[0].rawKey, "s:dashboard_test_key");
     assert.deepStrictEqual(keys2[0].value, { message: "hello dashboard" });
 
     // 6. Delete key through API
     const res6 = await fetch(`http://localhost:${dashboardPort}/api/keys`, {
       method: "DELETE",
       headers: {
-        ...getAuthHeader("admin", "admin"),
+        ...getAuthHeader("manoj", "manoj"),
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
@@ -180,6 +180,90 @@ test("SSDiskDB Local Mode Integration Tests", async (t) => {
     await assert.rejects(async () => {
       await fetch(`http://localhost:${dashboardPort}/`);
     });
+
+    // Cleanup
+    fs.rmSync(testDbPath, { recursive: true, force: true });
+  });
+
+  await t.test("VPC Cross-Server Connections & Allowed Verification", async () => {
+    const dashboardPort = 9006;
+    const testDbPath = "./test-cross-server-db";
+    const fs = require("fs");
+    fs.rmSync(testDbPath, { recursive: true, force: true });
+
+    // Connect and start dashboard server (central cache)
+    const centralServer = await connect({
+      storagePath: testDbPath,
+      startDashboard: true,
+      dashboardPort
+    });
+
+    // 1. Connection remote client should fail immediately on handshake if not registered/invalid key
+    await assert.rejects(async () => {
+      await connect({
+        remoteUrl: `http://localhost:${dashboardPort}`,
+        apiKey: "invalid_key",
+        serverId: "server-a"
+      });
+    }, /Forbidden/);
+
+    // 2. Register "server-a" and "server-b" in the central server
+    const db = centralServer.db;
+    const apiKeyA = "ssdb_key_a";
+    const apiKeyB = "ssdb_key_b";
+    await db.put("config:server:server-a", JSON.stringify({ registeredAt: Date.now(), apiKey: apiKeyA }));
+    await db.put("config:server:server-b", JSON.stringify({ registeredAt: Date.now(), apiKey: apiKeyB }));
+
+    // 3. Connection with valid apiKey should succeed now
+    const clientA = await connect({
+      remoteUrl: `http://localhost:${dashboardPort}`,
+      apiKey: apiKeyA,
+      serverId: "server-a"
+    });
+
+    // Now try set request, should succeed
+    const resSet = await clientA.set("key1", "val1");
+    assert.strictEqual(resSet, 1);
+
+    // Verify key was saved with namespacing in central server
+    const rawVal = await centralServer.db.get("s:client:server-a:key1");
+    assert.ok(rawVal);
+    assert.strictEqual(JSON.parse(rawVal), "val1");
+
+    // Connect server-b client and set the same key to a different value
+    const clientB = await connect({
+      remoteUrl: `http://localhost:${dashboardPort}`,
+      apiKey: apiKeyB,
+      serverId: "server-b"
+    });
+    await clientB.set("key1", "val2");
+
+    // Verify namespaced key isolation
+    assert.strictEqual(await clientA.get("key1"), "val1");
+    assert.strictEqual(await clientB.get("key1"), "val2");
+
+    // Verify lists show both servers separately via HTTP API
+    const resKeys = await fetch(`http://localhost:${dashboardPort}/api/keys`, {
+      headers: {
+        "Authorization": "Basic " + Buffer.from("manoj:manoj").toString("base64")
+      }
+    });
+    const parsedKeys = await resKeys.json();
+    
+    // Should have 2 keys in list
+    assert.strictEqual(parsedKeys.length, 2);
+    
+    const keyA = parsedKeys.find(k => k.server === "server-a");
+    const keyB = parsedKeys.find(k => k.server === "server-b");
+    assert.ok(keyA);
+    assert.ok(keyB);
+    assert.strictEqual(keyA.value, "val1");
+    assert.strictEqual(keyB.value, "val2");
+
+    // Close clients
+    await clientA.close();
+    await clientB.close();
+    await centralServer.close();
 
     // Cleanup
     fs.rmSync(testDbPath, { recursive: true, force: true });

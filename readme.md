@@ -92,31 +92,44 @@ import { connect } from "ssdiskdb";
 
 ## Connection Options
 
-SSDiskDB is a purely local, database-less caching and database engine powered by **LevelDB**. It handles all storage locally on disk and supports automatic JSON typing and optional encryption.
+SSDiskDB is a local, embedded caching and database engine powered by **LevelDB**. It can operate as a purely local cache inside your application, or as a central cache server shared across multiple remote client servers (VPC environment) using secure API Keys.
 
-### 1. Default Connection (Quick Start)
+### 1. Local Mode Connection (Quick Start)
 Stores data in the default folder `./ssdb-local-db`:
 ```js
+const { connect } = require("ssdiskdb");
 const db = await connect();
 ```
 
-### 2. Custom Directory Path
-Stores data in a custom directory:
-```js
-const db = await connect("./my-custom-data-dir");
-```
-
-### 3. Connect with Options (e.g. Encryption & Dashboard)
-To secure your data, pass an `encryptionKey` option. All values will be automatically encrypted using `aes-256-cbc`.
+To configure custom path, encryption (AES-256-CBC), or start the dashboard server:
 ```js
 const db = await connect({
   storagePath: "./my-custom-data-dir",
   encryptionKey: "my-secure-key",
-  startDashboard: true // Option to start the dashboard server
+  startDashboard: true,
+  dashboardPort: 8971
 });
 ```
 
-*Note: Unencrypted legacy data in the database will still be read correctly as SSDiskDB transparently falls back to unencrypted reads for backward compatibility.*
+### 2. Remote Mode Connection (VPC Cross-Server)
+When deployed inside a VPC, multiple client servers can use a central SSDiskDB cache server. To connect, a client server needs a secure API Key registered on the central server:
+```js
+const db = await connect({
+  remoteUrl: "http://<central-server-ip>:8971",
+  apiKey: "ssdb_c4dee067d4a23dd35da3270ddd5b2cc5",
+  serverId: "server-a" // Identifier for your client server
+});
+```
+
+*Connection parameters mapping:*
+- **remoteUrl**: The URL/IP and port of the central SSDiskDB cache server (e.g. `http://10.0.0.2:8971`).
+- **apiKey**: The whitelisted server's API Key. Find this in the dashboard under the **Allowed Servers** tab (in the **API Key** column) or by running the CLI command `npx ssdiskdb server list`.
+- **serverId**: The whitelisted server identifier. This **must exactly match** the whitelisted value in the dashboard's **Server IP / Hostname** column (e.g., `server-a` or `10.0.0.5`).
+
+> [!IMPORTANT]
+> **Startup Handshake**: During `connect()`, a remote client performs an immediate validation handshake with the central server. If the API Key is invalid, the server is blocked/restricted, or the endpoint is unreachable, `connect()` fails early throwing a descriptive error.
+> 
+> **Data Isolation**: The central server automatically isolates database operations. Client-set keys are prefixed behind the scenes (e.g. `s:client:server-a:mykey`). Operations like `flush()` or `getAllKeys()` are sandboxed to only affect the client's own namespace.
 
 > [!NOTE]
 > **Storage Structure (Directory vs. Single File)**: Unlike SQLite (which stores all data in a single file like `db.sqlite`), **LevelDB is directory-based**. 
@@ -127,7 +140,7 @@ const db = await connect({
 
 ## Web Insights Dashboard & CLI (NPM Executable)
 
-SSDiskDB comes equipped with a built-in web console similar to Redis Insights. It operates on port `8971` by default and allows you to view database statistics, search keys, add/edit cache entries, delete records, and clear the database.
+SSDiskDB comes equipped with a built-in web console similar to Redis Insights. It operates on port `8971` by default and allows you to view database statistics, search keys, add/edit cache entries, delete records, clear the database, and manage allowed client connections.
 
 ### 1. Launch via CLI (npx)
 
@@ -143,27 +156,49 @@ npx ssdiskdb start --port 9000 --path ./my-custom-db
 
 ### 2. Configure Admin Credentials
 
-By default, the dashboard is protected by Basic Authentication with username `admin` and password `admin`. You can change these credentials via the CLI:
+By default, the dashboard is protected by Basic Authentication with username `manoj` and password `manoj`. You can change these credentials via the CLI:
 
 ```bash
 npx ssdiskdb credentials --username myuser --password mysecurepass --path ./my-custom-db
 ```
 
-### 3. Programmatic Launch
+### 3. Server Access Control & API Key Management (VPC Security)
+
+To allow client servers to connect remotely, you must register them.
+
+#### A. Manage via CLI:
+```bash
+# Allow a client server address and generate its API Key
+npx ssdiskdb server add 10.0.0.5 --path ./my-custom-db
+
+# List all allowed servers and their API Keys
+npx ssdiskdb server list --path ./my-custom-db
+
+# Remove allowed server access
+npx ssdiskdb server remove 10.0.0.5 --path ./my-custom-db
+```
+
+#### B. Manage via Web Dashboard:
+In the web dashboard under the **Allowed Servers** tab, you can manage remote access in real-time:
+- **Add Connections**: Input client IP/domain to whitelist and auto-generate an API key.
+- **See & Copy Keys**: View and click to copy the generated secure `ssdb_` API keys.
+- **Restrict/Block Access**: Click the **Block** button to temporarily restrict client access. When blocked, the client immediately receives `403 Forbidden` on all heartbeats and cache operations. Click **Allow Access** to restore connection.
+- **Reissue Key**: Click **Reissue Key** to regenerate a fresh API key. The old key is instantly invalidated, preventing unauthorized access.
+
+### 4. Programmatic Launch
 
 You can also start the web dashboard directly from your Node.js code:
 
 ```js
 // Option 1: Start automatically during connection
 const db = await connect({
-  local: true,
   storagePath: "./my-custom-db",
   startDashboard: true,
   dashboardPort: 8971
 });
 
 // Option 2: Start manually on an active connection
-const db = await connect("local");
+const db = await connect("./my-custom-db");
 await db.startDashboard(8971);
 ```
 
