@@ -1,6 +1,6 @@
 {
   "name": "ssdiskdb",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Promise-based SSDB client",
   "main": "./dist/cjs/index.js",
   "module": "./dist/index.js",
