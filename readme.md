@@ -1,18 +1,51 @@
 # SSDiskDB
 
-SSDiskDB is a high-performance, modern, Promise-based client wrapper for [SSDB (Fast NoSQL Database)](https://github.com/ideawu/ssdb). It is designed to act as a modern API layer to interact with SSDB in an easy, clean, and developer-friendly way.
+[![NPM Version](https://img.shields.io/npm/v/ssdiskdb.svg)](https://www.npmjs.com/package/ssdiskdb)
+[![License](https://img.shields.io/npm/l/ssdiskdb.svg)](https://github.com/ManojGowda89/ssdiskdb/blob/main/LICENSE)
+[![GitHub Repository](https://img.shields.io/badge/GitHub-ManojGowda89%2Fssdiskdb-blue?logo=github)](https://github.com/ManojGowda89/ssdiskdb)
+[![SSDB Database](https://img.shields.io/badge/Database-ideawu%2Fssdb-brightgreen?logo=database)](https://github.com/ideawu/ssdb)
 
-Unlike older legacy callback-based SSDB libraries, SSDiskDB provides an out-of-the-box production-ready interface equipped with advanced developer ergonomics.
+**SSDiskDB** is a high-performance, modern, Promise-based client wrapper for [SSDB (Fast NoSQL Database)](https://github.com/ideawu/ssdb). It is designed to act as an easy, clean, and developer-friendly API layer to interact with SSDB in production Node.js applications. 
 
-## Key Features (Production Ready)
+This client library is hosted at [github.com/ManojGowda89/ssdiskdb](https://github.com/ManojGowda89/ssdiskdb).
 
-- ⚡ **Modern Promise-Based API**: Say goodbye to callback hell; fully compatible with `async/await`.
-- 🔌 **Built-in Connection Pooling**: Handles connections efficiently under heavy load.
-- 📦 **Automatic JSON Serialization**: Directly save and load JavaScript objects, arrays, numbers, and booleans without manually calling `JSON.stringify` and `JSON.parse`.
-- 🔒 **AES-256-CBC Encryption**: Secure your data transparently. Values are automatically encrypted on storage and decrypted on retrieval.
-- 🔄 **Legacy Backward Compatibility**: Bypasses decryption automatically for legacy unencrypted data, making migration painless.
-- 📘 **TypeScript Native**: Ship type-safe code with built-in, comprehensive type declarations.
-- 📦 **Dual ESM & CommonJS**: Published with dual compilation targets for compatibility across modern and legacy runtimes.
+---
+
+## Why SSDB? (Inspired by Zerodha)
+
+Our adoption of SSDB in production as a primary key-value cache is inspired by tech-industry pioneers like **Zerodha** (India's largest stock broker), who document their use of SSDB in their [Zerodha Tech Stack](https://zerodha.tech/stack/).
+
+In massive production environments, storing billions of keys in memory-only databases like Redis becomes prohibitively expensive due to RAM costs. SSDB solves this by utilizing Google's **LevelDB** as its storage engine. It writes data to disk while maintaining a highly optimized memory cache for hot data, achieving near-Redis performance at a fraction of the cost.
+
+### How Redis and SSDB Differ
+
+| Feature | Redis | SSDB |
+| :--- | :--- | :--- |
+| **Storage Medium** | Primarily RAM (In-Memory) | Disk-backed (using LevelDB) with memory cache for hot data |
+| **Data Capacity** | Constrained by available RAM | Constrained by disk capacity (up to terabytes/petabytes) |
+| **Operational Cost** | High (RAM is expensive at scale) | Low (Disk storage is extremely cost-effective) |
+| **Warmup Behavior** | None (Immediate, but high boot time on snapshot loads) | Incremental (Cache warms up as keys are queried) |
+| **Data Structure Support** | Strings, Hashes, Lists, Sets, Sorted Sets, HyperLogLogs, etc. | Strings, Hashes, Sorted Sets, Lists |
+| **Protocol** | Redis Protocol (RESP) | SSDB Protocol (Simple network protocol) |
+
+### Key Use Cases for SSDB
+
+1. **Large-Scale Caching**: When cache sizes exceed hundreds of gigabytes or terabytes, SSDB serves as an excellent disk-backed caching layer, saving massive amounts of RAM.
+2. **Session Storage**: Managing active sessions for millions of concurrent users without ballooning hosting costs.
+3. **Analytics & Metrics**: Storing high-throughput telemetry, counters, and log statistics.
+4. **Queue & Sorted List Buffers**: Operating high-volume sorted sets and hashes that are too large to fit in Redis memory.
+
+---
+
+## Key Features of SSDiskDB
+
+- ⚡ **Modern Promise-Based API**: Fully compatible with `async/await` syntax.
+- 🔌 **Built-in Connection Pooling**: Manages network sockets efficiently.
+- 📦 **Automatic JSON Serialization**: Directly save and load objects, arrays, numbers, and booleans without manually calling `JSON.stringify` or `JSON.parse`.
+- 🔒 **AES-256-CBC Encryption**: Transparently encrypt values on write and decrypt on read using a connection-wide `encryptionKey`.
+- 🔄 **Legacy Backward Compatibility**: Auto-detects and reads unencrypted legacy values safely without crashing or failing.
+- 📘 **TypeScript Native**: Complete type safety and IDE autocomplete.
+- 📦 **Dual ESM & CommonJS**: Ready for both modern and legacy runtime environments.
 
 ---
 
@@ -24,9 +57,9 @@ npm install ssdiskdb
 
 ## Prerequisites
 
-Make sure an SSDB server is running.
+An active SSDB server must be running.
 
-Example Docker command:
+### Example Docker Command
 
 ```bash
 docker run -d \
@@ -34,6 +67,8 @@ docker run -d \
   -p 8888:8888 \
   cleardevice/ssdb
 ```
+
+---
 
 ## Quick Start
 
@@ -44,32 +79,31 @@ const { connect } = require("ssdiskdb");
   const db = await connect();
 
   await db.set("name", "Manoj");
-
   const value = await db.get("name");
-
-  console.log(value);
+  console.log(value); // Output: Manoj
 
   await db.close();
 })();
 ```
 
-## TypeScript
+### TypeScript Usage
 
 ```ts
 import { connect } from "ssdiskdb";
 
-const db = await connect();
+const db = await connect("127.0.0.1:8888");
 
 await db.set("name", "Manoj");
-
 console.log(await db.get("name"));
 
 await db.close();
 ```
 
+---
+
 ## Connect with Encryption
 
-To store your values securely, you can pass an `encryptionKey` when connecting. All stored string values and hash values will be encrypted using `aes-256-cbc`.
+To encrypt data stored in SSDB, supply an `encryptionKey` option during connection. Values will be automatically encrypted using `aes-256-cbc`.
 
 ```js
 // Option 1: Pass custom host and options
@@ -84,15 +118,29 @@ const db = await connect({
 });
 ```
 
-### Backward Compatibility
-If an `encryptionKey` is configured, SSDiskDB automatically detects if a value in the database is unencrypted (legacy data) and reads it directly without attempting decryption. This allows you to enable encryption on existing databases without breaking existing keys.
+*Note: Unencrypted legacy data in the database will still be read correctly as SSDiskDB transparently falls back to unencrypted reads for backward compatibility.*
+
+---
 
 ## Automatic JSON Serialization & Typing
 
-SSDiskDB automatically serializes and deserializes non-string values. You do not need to call `JSON.stringify` or `JSON.parse` manually.
+SSDiskDB automatically serializes and deserializes non-string values:
 
-- Storing objects/arrays/numbers/booleans automatically converts them to JSON strings.
-- Retrieving them automatically parses them back to their original JS types (e.g., retrieving a number returns a JS `number`, an object returns a JS `object`).
+```js
+const db = await connect();
+
+// Storing a complex object (no manual JSON.stringify needed!)
+await db.set("user:1", {
+  name: "Manoj",
+  role: "Developer",
+  active: true
+});
+
+const user = await db.get("user:1");
+console.log(user); // Output: { name: 'Manoj', role: 'Developer', active: true } (already parsed!)
+```
+
+---
 
 ## Available Methods
 
@@ -101,54 +149,42 @@ SSDiskDB automatically serializes and deserializes non-string values. You do not
 ```js
 await db.set(key, value); // value can be string, object, array, number, boolean
 await db.get(key);        // returns value with original type preserved
-await db.del(key);
-await db.exists(key);
-await db.incr(key);
+await db.del(key);        // deletes a key
+await db.exists(key);     // returns boolean
+await db.incr(key, num);  // increments an integer value
 ```
 
 ### Hash Operations
 
 ```js
-await db.hset(hash, key, value); // value can be any JS type
-await db.hget(hash, key);        // returns value with original type preserved
-await db.hdel(hash, key);
+await db.hset(hash, key, value); // stores value in a hash map
+await db.hget(hash, key);        // retrieves value from a hash map
+await db.hdel(hash, key);        // deletes a key from a hash map
 ```
 
 ### Sorted Set Operations
 
 ```js
-await db.zset(set, key, score);
-await db.zget(set, key);
-await db.zdel(set, key);
+await db.zset(set, key, score);  // sets the score of a member in a sorted set
+await db.zget(set, key);        // retrieves the score of a member
+await db.zdel(set, key);        // deletes a member from a sorted set
 ```
 
 ### Close Connection
 
 ```js
-await db.close();
+await db.close(); // Closes client connection and destroys the pool
 ```
 
-## Example
+---
 
-```js
-const { connect } = require("ssdiskdb");
+## References
 
-(async () => {
-  const db = await connect();
+- **Official SSDB Database**: [github.com/ideawu/ssdb](https://github.com/ideawu/ssdb)
+- **SSDiskDB Client Library**: [github.com/ManojGowda89/ssdiskdb](https://github.com/ManojGowda89/ssdiskdb)
+- **Zerodha Tech Stack**: [zerodha.tech/stack](https://zerodha.tech/stack/)
 
-  // No manual JSON.stringify needed anymore!
-  await db.set("user:1", {
-    name: "Manoj",
-    role: "Developer"
-  });
-
-  const user = await db.get("user:1");
-
-  console.log(user); // Output: { name: 'Manoj', role: 'Developer' } (already parsed!)
-
-  await db.close();
-})();
-```
+---
 
 ## License
 
@@ -156,6 +192,4 @@ MIT
 
 ---
 
-**SEO Keywords**: SSDB, SSDB Client, SSDB Driver, Node.js SSDB, Promise SSDB Client, Redis Alternative, TypeScript SSDB Client, AES-256-CBC Encrypted SSDB, Fast NoSQL Database Wrapper, ideawu ssdb client, Node.js NoSQL Client, SSDiskDB.
-
-
+**SEO Keywords**: SSDB, SSDB Client, SSDB Driver, Node.js SSDB, Promise SSDB Client, Redis Alternative, TypeScript SSDB Client, AES-256-CBC Encrypted SSDB, Fast NoSQL Database Wrapper, ideawu ssdb client, Node.js NoSQL Client, SSDiskDB, Zerodha Tech Stack SSDB.
