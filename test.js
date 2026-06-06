@@ -277,5 +277,100 @@ test("SSDiskDB Local Mode Integration Tests", async (t) => {
     localDb = await connect({ local: true, storagePath });
     assert.strictEqual(await localDb.get("persistKey"), "should be saved");
   });
+
+  await t.test("Web Dashboard HTTP Server API", async () => {
+    const dashboardPort = 9005;
+    const testDbPath = "./test-dashboard-db";
+    const fs = require("fs");
+    fs.rmSync(testDbPath, { recursive: true, force: true });
+
+    // Connect and start dashboard
+    const client = await connect({
+      local: true,
+      storagePath: testDbPath,
+      startDashboard: true,
+      dashboardPort
+    });
+
+    const getAuthHeader = (un, pw) => ({
+      "Authorization": "Basic " + Buffer.from(`${un}:${pw}`).toString("base64")
+    });
+
+    // 1. Unauthenticated request
+    const res1 = await fetch(`http://localhost:${dashboardPort}/`);
+    assert.strictEqual(res1.status, 401);
+
+    // 2. Authenticated request (HTML)
+    const res2 = await fetch(`http://localhost:${dashboardPort}/`, {
+      headers: getAuthHeader("admin", "admin")
+    });
+    assert.strictEqual(res2.status, 200);
+    const html = await res2.text();
+    assert.ok(html.includes("SSDiskDB Insights"));
+
+    // 3. Authenticated keys API (empty)
+    const res3 = await fetch(`http://localhost:${dashboardPort}/api/keys`, {
+      headers: getAuthHeader("admin", "admin")
+    });
+    assert.strictEqual(res3.status, 200);
+    const keys = await res3.json();
+    assert.deepStrictEqual(keys, []);
+
+    // 4. Save key through API
+    const res4 = await fetch(`http://localhost:${dashboardPort}/api/keys`, {
+      method: "POST",
+      headers: {
+        ...getAuthHeader("admin", "admin"),
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        type: "string",
+        key: "dashboard_test_key",
+        value: { message: "hello dashboard" }
+      })
+    });
+    assert.strictEqual(res4.status, 200);
+
+    // Verify key in client
+    const value = await client.get("dashboard_test_key");
+    assert.deepStrictEqual(value, { message: "hello dashboard" });
+
+    // 5. Get keys listing through API
+    const res5 = await fetch(`http://localhost:${dashboardPort}/api/keys`, {
+      headers: getAuthHeader("admin", "admin")
+    });
+    assert.strictEqual(res5.status, 200);
+    const keys2 = await res5.json();
+    assert.strictEqual(keys2.length, 1);
+    assert.strictEqual(keys2[0].key, "s:dashboard_test_key");
+    assert.deepStrictEqual(keys2[0].value, { message: "hello dashboard" });
+
+    // 6. Delete key through API
+    const res6 = await fetch(`http://localhost:${dashboardPort}/api/keys`, {
+      method: "DELETE",
+      headers: {
+        ...getAuthHeader("admin", "admin"),
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        key: "s:dashboard_test_key"
+      })
+    });
+    assert.strictEqual(res6.status, 200);
+
+    // Verify key deleted
+    assert.strictEqual(await client.get("dashboard_test_key"), undefined);
+
+    // Close client
+    await client.close();
+
+    // Verify server closed (fetch throws connection refused)
+    await assert.rejects(async () => {
+      await fetch(`http://localhost:${dashboardPort}/`);
+    });
+
+    // Cleanup
+    fs.rmSync(testDbPath, { recursive: true, force: true });
+  });
 });
 

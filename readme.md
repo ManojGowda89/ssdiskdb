@@ -141,6 +141,57 @@ const db = await connect({
 });
 ```
 
+> [!NOTE]
+> **Storage Structure (Directory vs. Single File)**: Unlike SQLite (which stores all data in a single file like `db.sqlite`), **LevelDB is directory-based**. 
+> When you specify a path (e.g., `./my-custom-data-dir` or the default `./ssdb-local-db`), SSDiskDB will automatically create that directory and manage internal lock, log, and SST files inside it. 
+> **You do not need to create any file or directory beforehand**. The library initializes everything on first startup. We recommend using a descriptive directory path to keep your data organized.
+
+---
+
+## Web Insights Dashboard & CLI (NPM Executable)
+
+SSDiskDB comes equipped with a built-in web console similar to Redis Insights. It operates on port `8971` by default and allows you to view database statistics, search keys, add/edit cache entries, delete records, and clear the database.
+
+### 1. Launch via CLI (npx)
+
+You can launch the dashboard directly from your terminal using `npx`:
+
+```bash
+# Starts the local cache engine and opens the web dashboard on port 8971
+npx ssdiskdb start
+
+# Start on a custom port and database directory
+npx ssdiskdb start --port 9000 --path ./my-custom-db
+```
+
+### 2. Configure Admin Credentials
+
+By default, the dashboard is protected by Basic Authentication with username `admin` and password `admin`. You can change these credentials via the CLI:
+
+```bash
+npx ssdiskdb credentials --username myuser --password mysecurepass --path ./my-custom-db
+```
+
+### 3. Programmatic Launch
+
+You can also start the web dashboard directly from your Node.js code:
+
+```js
+// Option 1: Start automatically during connection
+const db = await connect({
+  local: true,
+  storagePath: "./my-custom-db",
+  startDashboard: true,
+  dashboardPort: 8971
+});
+
+// Option 2: Start manually on an active connection
+const db = await connect("local");
+await db.startDashboard(8971);
+```
+
+When you close the database connection with `await db.close()`, the web dashboard server will shut down automatically.
+
 ---
 
 ## Automatic JSON Serialization & Typing

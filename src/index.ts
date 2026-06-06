@@ -2,6 +2,7 @@ import ssdb from "ssdb";
 import { promisify } from "util";
 import crypto from "crypto";
 import { Level } from "level";
+import { startDashboardServer, DashboardServer } from "./dashboard";
 
 export interface SSDiskDBClient {
   set(key: string, value: any): Promise<any>;
@@ -19,6 +20,13 @@ export interface SSDiskDBClient {
   zdel(name: string, key: string): Promise<any>;
 
   close(): Promise<void>;
+
+  // Dashboard & CLI configurations (Optional/Local)
+  startDashboard?(port?: number): Promise<void>;
+  getAllKeys?(): Promise<{ key: string; value: any }[]>;
+  flush?(): Promise<void>;
+  setCredentials?(username: string, passwordHash: string): Promise<void>;
+  getCredentials?(): Promise<{ username: string; passwordHash: string }>;
 }
 
 export interface ConnectOptions {
@@ -26,6 +34,8 @@ export interface ConnectOptions {
   encryptionKey?: string;
   local?: boolean;
   storagePath?: string;
+  startDashboard?: boolean;
+  dashboardPort?: number;
 }
 
 function serialize(value: any): string {
@@ -78,6 +88,7 @@ function decrypt(encryptedText: string, encryptionKey: string): string {
 class LocalSSDBClient implements SSDiskDBClient {
   private db: Level<string, string>;
   private encryptionKey?: string;
+  private dashboardServer?: DashboardServer;
 
   constructor(db: Level<string, string>, encryptionKey?: string) {
     this.db = db;
@@ -181,7 +192,65 @@ class LocalSSDBClient implements SSDiskDBClient {
     return 1;
   }
 
+  async getAllKeys(): Promise<{ key: string; value: any }[]> {
+    const list: { key: string; value: any }[] = [];
+    for await (const [key, value] of this.db.iterator()) {
+      if (!key.startsWith("config:")) {
+        let parsedVal = value;
+        if (this.encryptionKey) {
+          try {
+            parsedVal = decrypt(parsedVal, this.encryptionKey);
+          } catch (e) {}
+        }
+        parsedVal = deserialize(parsedVal);
+        list.push({ key, value: parsedVal });
+      }
+    }
+    return list;
+  }
+
+  async flush(): Promise<void> {
+    const batch = this.db.batch();
+    for await (const key of this.db.keys()) {
+      if (!key.startsWith("config:")) {
+        batch.del(key);
+      }
+    }
+    await batch.write();
+  }
+
+  async setCredentials(username: string, passwordHash: string): Promise<void> {
+    await this.db.put("config:username", username);
+    await this.db.put("config:password", passwordHash);
+  }
+
+  async getCredentials(): Promise<{ username: string; passwordHash: string }> {
+    const defaultHash = crypto.createHash("sha256").update("admin").digest("hex");
+    let username = "admin";
+    let passwordHash = defaultHash;
+    try {
+      const u = await this.db.get("config:username");
+      if (u) username = u;
+    } catch (e) {}
+    try {
+      const p = await this.db.get("config:password");
+      if (p) passwordHash = p;
+    } catch (e) {}
+    return { username, passwordHash };
+  }
+
+  async startDashboard(port: number = 8971): Promise<void> {
+    if (this.dashboardServer) {
+      return;
+    }
+    this.dashboardServer = await startDashboardServer(this, port, () => this.getCredentials());
+  }
+
   async close(): Promise<void> {
+    if (this.dashboardServer) {
+      await this.dashboardServer.close();
+      this.dashboardServer = undefined;
+    }
     await this.db.close();
   }
 }
@@ -195,13 +264,17 @@ export async function connect(
   let encryptionKey: string | undefined;
   let isLocal = false;
   let localPath = "./ssdb-local-db";
+  let startDashboard = false;
+  let dashboardPort = 8971;
 
   let hostStr: string | undefined;
 
   if (typeof hostOrOptions === "string") {
     hostStr = hostOrOptions;
-    if (options && options.encryptionKey) {
-      encryptionKey = options.encryptionKey;
+    if (options) {
+      if (options.encryptionKey) encryptionKey = options.encryptionKey;
+      if (options.startDashboard) startDashboard = options.startDashboard;
+      if (options.dashboardPort) dashboardPort = options.dashboardPort;
     }
     if (hostOrOptions === "local") {
       isLocal = true;
@@ -217,13 +290,23 @@ export async function connect(
       if (hostOrOptions.storagePath) {
         localPath = hostOrOptions.storagePath;
       }
+      if (hostOrOptions.startDashboard) {
+        startDashboard = hostOrOptions.startDashboard;
+      }
+      if (hostOrOptions.dashboardPort) {
+        dashboardPort = hostOrOptions.dashboardPort;
+      }
     }
   }
 
   if (isLocal) {
     const levelDb = new Level(localPath);
     await levelDb.open();
-    return new LocalSSDBClient(levelDb, encryptionKey);
+    const client = new LocalSSDBClient(levelDb, encryptionKey);
+    if (startDashboard) {
+      await client.startDashboard(dashboardPort);
+    }
+    return client;
   }
 
   if (hostStr) {
@@ -306,5 +389,6 @@ export async function connect(
 export default {
   connect
 };
+
 
 
