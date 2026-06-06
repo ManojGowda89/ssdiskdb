@@ -1,0 +1,38 @@
+{
+  "name": "ssdiskdb",
+  "version": "1.0.0",
+  "description": "Promise-based SSDB client",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc && tsc -p tsconfig.cjs.json",
+    "test": "node test.js"
+  },
+  "keywords": [
+    "ssdb",
+    "ssdb-client",
+    "ssdb-driver",
+    "database",
+    "key-value",
+    "storage",
+    "nosql",
+    "redis-alternative",
+    "promise-based",
+    "typescript",
+    "encryption",
+    "json-serialization",
+    "production-ready"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "ssdb": "^0.3.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "@types/node": "^24.0.0"
+  }
+}
