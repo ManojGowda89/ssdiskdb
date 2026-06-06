@@ -55,27 +55,13 @@ In massive production environments, storing billions of keys in memory-only data
 npm install ssdiskdb
 ```
 
-## Prerequisites
-
-An active SSDB server must be running.
-
-### Example Docker Command
-
-```bash
-docker run -d \
-  --name ssdb \
-  -p 8888:8888 \
-  cleardevice/ssdb
-```
-
----
-
 ## Quick Start
 
 ```js
 const { connect } = require("ssdiskdb");
 
 (async () => {
+  // Connects to local embedded LevelDB by default!
   const db = await connect();
 
   await db.set("name", "Manoj");
@@ -91,55 +77,46 @@ const { connect } = require("ssdiskdb");
 ```ts
 import { connect } from "ssdiskdb";
 
-const db = await connect("127.0.0.1:8888");
+(async () => {
+  // Connects to local embedded LevelDB by default!
+  const db = await connect();
 
-await db.set("name", "Manoj");
-console.log(await db.get("name"));
+  await db.set("name", "Manoj");
+  console.log(await db.get("name"));
 
-await db.close();
+  await db.close();
+})();
 ```
 
 ---
 
-## Connect with Encryption
+## Connection Options
 
-To encrypt data stored in SSDB, supply an `encryptionKey` option during connection. Values will be automatically encrypted using `aes-256-cbc`.
+SSDiskDB is a purely local, database-less caching and database engine powered by **LevelDB**. It handles all storage locally on disk and supports automatic JSON typing and optional encryption.
 
+### 1. Default Connection (Quick Start)
+Stores data in the default folder `./ssdb-local-db`:
 ```js
-// Option 1: Pass custom host and options
-const db = await connect("127.0.0.1:8888", {
-  encryptionKey: "my-secure-key"
-});
+const db = await connect();
+```
 
-// Option 2: Pass options object
+### 2. Custom Directory Path
+Stores data in a custom directory:
+```js
+const db = await connect("./my-custom-data-dir");
+```
+
+### 3. Connect with Options (e.g. Encryption & Dashboard)
+To secure your data, pass an `encryptionKey` option. All values will be automatically encrypted using `aes-256-cbc`.
+```js
 const db = await connect({
-  host: "127.0.0.1:8888",
-  encryptionKey: "my-secure-key"
+  storagePath: "./my-custom-data-dir",
+  encryptionKey: "my-secure-key",
+  startDashboard: true // Option to start the dashboard server
 });
 ```
 
 *Note: Unencrypted legacy data in the database will still be read correctly as SSDiskDB transparently falls back to unencrypted reads for backward compatibility.*
-
----
-
-## Connect to Embedded Local Database (Database-less Mode)
-
-For simple or offline projects where you do not want to set up and run a separate SSDB server, SSDiskDB provides an embedded local mode powered by **LevelDB**. It handles all storage locally on disk and supports the exact same API operations, including automatic JSON typing and optional encryption!
-
-```js
-// Option 1: Quick start (stores in default folder './ssdb-local-db')
-const db = await connect("local");
-
-// Option 2: Connect to a custom directory path
-const db = await connect("local:./my-custom-data-dir");
-
-// Option 3: Configure via options object
-const db = await connect({
-  local: true,
-  storagePath: "./my-custom-data-dir",
-  encryptionKey: "my-secure-key" // Local embedded storage can be encrypted too!
-});
-```
 
 > [!NOTE]
 > **Storage Structure (Directory vs. Single File)**: Unlike SQLite (which stores all data in a single file like `db.sqlite`), **LevelDB is directory-based**. 

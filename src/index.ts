@@ -1,5 +1,3 @@
-import ssdb from "ssdb";
-import { promisify } from "util";
 import crypto from "crypto";
 import { Level } from "level";
 import { startDashboardServer, DashboardServer } from "./dashboard";
@@ -21,19 +19,17 @@ export interface SSDiskDBClient {
 
   close(): Promise<void>;
 
-  // Dashboard & CLI configurations (Optional/Local)
-  startDashboard?(port?: number): Promise<void>;
-  getAllKeys?(): Promise<{ key: string; value: any }[]>;
-  flush?(): Promise<void>;
-  setCredentials?(username: string, passwordHash: string): Promise<void>;
-  getCredentials?(): Promise<{ username: string; passwordHash: string }>;
+  // Dashboard & CLI configurations
+  startDashboard(port?: number): Promise<void>;
+  getAllKeys(): Promise<{ key: string; value: any }[]>;
+  flush(): Promise<void>;
+  setCredentials(username: string, passwordHash: string): Promise<void>;
+  getCredentials(): Promise<{ username: string; passwordHash: string }>;
 }
 
 export interface ConnectOptions {
-  host?: string;
-  encryptionKey?: string;
-  local?: boolean;
   storagePath?: string;
+  encryptionKey?: string;
   startDashboard?: boolean;
   dashboardPort?: number;
 }
@@ -256,139 +252,37 @@ class LocalSSDBClient implements SSDiskDBClient {
 }
 
 export async function connect(
-  hostOrOptions?: string | ConnectOptions,
+  pathOrOptions?: string | ConnectOptions,
   options?: ConnectOptions
 ): Promise<SSDiskDBClient> {
-  let hostName = "127.0.0.1";
-  let port = 8888;
+  let storagePath = "./ssdb-local-db";
   let encryptionKey: string | undefined;
-  let isLocal = false;
-  let localPath = "./ssdb-local-db";
   let startDashboard = false;
   let dashboardPort = 8971;
 
-  let hostStr: string | undefined;
-
-  if (typeof hostOrOptions === "string") {
-    hostStr = hostOrOptions;
+  if (typeof pathOrOptions === "string") {
+    storagePath = pathOrOptions;
     if (options) {
       if (options.encryptionKey) encryptionKey = options.encryptionKey;
       if (options.startDashboard) startDashboard = options.startDashboard;
       if (options.dashboardPort) dashboardPort = options.dashboardPort;
     }
-    if (hostOrOptions === "local") {
-      isLocal = true;
-    } else if (hostOrOptions.startsWith("local:")) {
-      isLocal = true;
-      localPath = hostOrOptions.substring(6);
-    }
-  } else if (hostOrOptions && typeof hostOrOptions === "object") {
-    hostStr = hostOrOptions.host;
-    encryptionKey = hostOrOptions.encryptionKey;
-    if (hostOrOptions.local) {
-      isLocal = true;
-      if (hostOrOptions.storagePath) {
-        localPath = hostOrOptions.storagePath;
-      }
-      if (hostOrOptions.startDashboard) {
-        startDashboard = hostOrOptions.startDashboard;
-      }
-      if (hostOrOptions.dashboardPort) {
-        dashboardPort = hostOrOptions.dashboardPort;
-      }
-    }
+  } else if (pathOrOptions && typeof pathOrOptions === "object") {
+    if (pathOrOptions.storagePath) storagePath = pathOrOptions.storagePath;
+    if (pathOrOptions.encryptionKey) encryptionKey = pathOrOptions.encryptionKey;
+    if (pathOrOptions.startDashboard) startDashboard = pathOrOptions.startDashboard;
+    if (pathOrOptions.dashboardPort) dashboardPort = pathOrOptions.dashboardPort;
   }
 
-  if (isLocal) {
-    const levelDb = new Level(localPath);
-    await levelDb.open();
-    const client = new LocalSSDBClient(levelDb, encryptionKey);
-    if (startDashboard) {
-      await client.startDashboard(dashboardPort);
-    }
-    return client;
+  const levelDb = new Level(storagePath);
+  await levelDb.open();
+  const client = new LocalSSDBClient(levelDb, encryptionKey);
+  if (startDashboard) {
+    await client.startDashboard(dashboardPort);
   }
-
-  if (hostStr) {
-    const parts = hostStr.split(":");
-    hostName = parts[0] || "127.0.0.1";
-    if (parts[1]) {
-      port = parseInt(parts[1], 10);
-    }
-  }
-
-  const pool = ssdb.createPool({
-    host: hostName,
-    port: port
-  });
-
-  const client = pool.acquire();
-
-  const rawSet = promisify(client.set.bind(client)) as (key: string, value: any) => Promise<any>;
-  const rawGet = promisify(client.get.bind(client)) as (key: string) => Promise<any>;
-  const rawHset = promisify(client.hset.bind(client)) as (name: string, key: string, value: any) => Promise<any>;
-  const rawHget = promisify(client.hget.bind(client)) as (name: string, key: string) => Promise<any>;
-
-  return {
-    set: async (key: string, value: any): Promise<any> => {
-      let serialized = serialize(value);
-      if (encryptionKey) {
-        serialized = encrypt(serialized, encryptionKey);
-      }
-      return rawSet(key, serialized);
-    },
-    get: async (key: string): Promise<any> => {
-      let res = await rawGet(key);
-      if (res !== undefined && res !== null) {
-        if (encryptionKey) {
-          res = decrypt(res, encryptionKey);
-        }
-        res = deserialize(res);
-      }
-      return res;
-    },
-    del: promisify(client.del.bind(client)),
-    exists: promisify(client.exists.bind(client)),
-    incr: promisify(client.incr.bind(client)),
-
-    hset: async (name: string, key: string, value: any): Promise<any> => {
-      let serialized = serialize(value);
-      if (encryptionKey) {
-        serialized = encrypt(serialized, encryptionKey);
-      }
-      return rawHset(name, key, serialized);
-    },
-    hget: async (name: string, key: string): Promise<any> => {
-      let res = await rawHget(name, key);
-      if (res !== undefined && res !== null) {
-        if (encryptionKey) {
-          res = decrypt(res, encryptionKey);
-        }
-        res = deserialize(res);
-      }
-      return res;
-    },
-    hdel: promisify(client.hdel.bind(client)),
-
-    zset: promisify(client.zset.bind(client)),
-    zget: promisify(client.zget.bind(client)),
-    zdel: promisify(client.zdel.bind(client)),
-
-    close: async () => {
-      if (client.close) {
-        client.close();
-      }
-
-      if (pool.destroy) {
-        pool.destroy();
-      }
-    }
-  };
+  return client;
 }
 
 export default {
   connect
 };
-
-
-

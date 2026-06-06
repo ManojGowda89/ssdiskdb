@@ -61,7 +61,6 @@ async function main() {
 
     try {
       const client = await connect({
-        local: true,
         storagePath: dbPath,
         startDashboard: true,
         dashboardPort: port
@@ -95,7 +94,6 @@ async function main() {
     try {
       console.log(`Opening database at ${dbPath}...`);
       const client = await connect({
-        local: true,
         storagePath: dbPath
       });
 
