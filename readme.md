@@ -3,37 +3,44 @@
 [![NPM Version](https://img.shields.io/npm/v/ssdiskdb.svg)](https://www.npmjs.com/package/ssdiskdb)
 [![License](https://img.shields.io/npm/l/ssdiskdb.svg)](https://github.com/ManojGowda89/ssdiskdb/blob/main/LICENSE)
 [![GitHub Repository](https://img.shields.io/badge/GitHub-ManojGowda89%2Fssdiskdb-blue?logo=github)](https://github.com/ManojGowda89/ssdiskdb)
-[![SSDB Database](https://img.shields.io/badge/Database-ideawu%2Fssdb-brightgreen?logo=database)](https://github.com/ideawu/ssdb)
+[![LevelDB](https://img.shields.io/badge/Database-Google%20LevelDB-blue?logo=google)](https://github.com/google/leveldb)
+[![Inspired by SSDB](https://img.shields.io/badge/Inspired%20by-SSDB-brightgreen?logo=database)](https://github.com/ideawu/ssdb)
 
-**SSDiskDB** is a high-performance, modern, Promise-based client wrapper for [SSDB (Fast NoSQL Database)](https://github.com/ideawu/ssdb). It is designed to act as an easy, clean, and developer-friendly API layer to interact with SSDB in production Node.js applications. 
+**SSDiskDB** is a high-performance, embedded, disk-backed NoSQL database and key-value store for Node.js, designed as a cost-effective alternative to Redis. It is built directly on top of [Google's LevelDB](https://github.com/google/leveldb).
 
-This client library is published on NPM at [npmjs.com/package/ssdiskdb](https://www.npmjs.com/package/ssdiskdb) and hosted on GitHub at [github.com/ManojGowda89/ssdiskdb](https://github.com/ManojGowda89/ssdiskdb).
+It is **not** a wrapper or client for the SSDB database server; rather, it is a standalone, lightweight database library that brings Redis-like APIs (Strings, Hashes, Sorted Sets) directly to LevelDB. It is inspired by the design principles of SSDB and its production adoption by industry pioneers like Zerodha.
+
+This database library is published on NPM at [npmjs.com/package/ssdiskdb](https://www.npmjs.com/package/ssdiskdb) and hosted on GitHub at [github.com/ManojGowda89/ssdiskdb](https://github.com/ManojGowda89/ssdiskdb).
 
 ---
 
-## Why SSDB? (Inspired by Zerodha)
+## Motivation & Inspiration (Inspired by SSDB & Zerodha)
 
-Our adoption of SSDB in production as a primary key-value cache is inspired by tech-industry pioneers like **Zerodha** (India's largest stock broker), who document their use of SSDB in their [Zerodha Tech Stack](https://zerodha.tech/stack/).
+The creation of **SSDiskDB** is inspired by **SSDB** and tech-industry pioneers like **Zerodha** (India's largest stock broker), who document their use of disk-backed databases in their [Zerodha Tech Stack](https://zerodha.tech/stack/).
 
-In massive production environments, storing billions of keys in memory-only databases like Redis becomes prohibitively expensive due to RAM costs. SSDB solves this by utilizing Google's **LevelDB** as its storage engine. It writes data to disk while maintaining a highly optimized memory cache for hot data, achieving near-Redis performance at a fraction of the cost.
+In massive production environments, storing billions of keys in memory-only databases like Redis becomes prohibitively expensive due to RAM costs. SSDB solved this by utilizing Google's [LevelDB](https://github.com/google/leveldb) as its storage engine under the hood, writing data to disk while maintaining a highly optimized memory cache for hot data, achieving near-Redis performance at a fraction of the cost.
 
-### How Redis and SSDB Differ
+**SSDiskDB** is built on these same principles: it leverages **LevelDB** directly inside Node.js to provide an embedded, Redis-like disk-backed database, without needing to run or manage an external SSDB server process.
 
-| Feature | Redis | SSDB |
-| :--- | :--- | :--- |
-| **Storage Medium** | Primarily RAM (In-Memory) | Disk-backed (using LevelDB) with memory cache for hot data |
-| **Data Capacity** | Constrained by available RAM | Constrained by disk capacity (up to terabytes/petabytes) |
-| **Operational Cost** | High (RAM is expensive at scale) | Low (Disk storage is extremely cost-effective) |
-| **Warmup Behavior** | None (Immediate, but high boot time on snapshot loads) | Incremental (Cache warms up as keys are queried) |
-| **Data Structure Support** | Strings, Hashes, Lists, Sets, Sorted Sets, HyperLogLogs, etc. | Strings, Hashes, Sorted Sets, Lists |
-| **Protocol** | Redis Protocol (RESP) | SSDB Protocol (Simple network protocol) |
+### How Redis, SSDB, and SSDiskDB Compare
 
-### Key Use Cases for SSDB
+| Feature | Redis | SSDB | SSDiskDB |
+| :--- | :--- | :--- | :--- |
+| **Type** | Standalone TCP Server | Standalone TCP Server | Embedded Library / Server |
+| **Storage Medium** | Primarily RAM (In-Memory) | Disk-backed (using LevelDB) | Disk-backed (using LevelDB) |
+| **Data Capacity** | Constrained by available RAM | Constrained by disk capacity | Constrained by disk capacity (up to terabytes/petabytes) |
+| **Operational Cost** | High (RAM is expensive at scale) | Low (Disk storage is cheap) | Extremely Low (No external server required in Local Mode) |
+| **Implementation** | C | C++ | TypeScript / Node.js (via LevelDB) |
+| **Data Structures** | Strings, Hashes, Lists, Sets, Sorted Sets, etc. | Strings, Hashes, Sorted Sets, Lists | Strings, Hashes, Sorted Sets |
+| **Protocol** | Redis Protocol (RESP) | SSDB Protocol (Simple network protocol) | HTTP / JSON-RPC (Remote mode) or Native JS API (Local mode) |
 
-1. **Large-Scale Caching**: When cache sizes exceed hundreds of gigabytes or terabytes, SSDB serves as an excellent disk-backed caching layer, saving massive amounts of RAM.
+### Key Use Cases for SSDiskDB
+
+1. **Large-Scale Caching**: When cache sizes exceed hundreds of gigabytes or terabytes, SSDiskDB serves as an excellent disk-backed caching layer, saving massive amounts of RAM.
 2. **Session Storage**: Managing active sessions for millions of concurrent users without ballooning hosting costs.
 3. **Analytics & Metrics**: Storing high-throughput telemetry, counters, and log statistics.
 4. **Queue & Sorted List Buffers**: Operating high-volume sorted sets and hashes that are too large to fit in Redis memory.
+
 
 ---
 
@@ -264,8 +271,9 @@ await db.close(); // Closes client connection and destroys the pool
 
 ## References
 
-- **Official SSDB Database**: [github.com/ideawu/ssdb](https://github.com/ideawu/ssdb)
-- **SSDiskDB Client Library**: [github.com/ManojGowda89/ssdiskdb](https://github.com/ManojGowda89/ssdiskdb)
+- **Google LevelDB**: [github.com/google/leveldb](https://github.com/google/leveldb)
+- **Official SSDB Database (Inspiration)**: [github.com/ideawu/ssdb](https://github.com/ideawu/ssdb)
+- **SSDiskDB Repository**: [github.com/ManojGowda89/ssdiskdb](https://github.com/ManojGowda89/ssdiskdb)
 - **SSDiskDB NPM Package**: [npmjs.com/package/ssdiskdb](https://www.npmjs.com/package/ssdiskdb)
 - **Zerodha Tech Stack**: [zerodha.tech/stack](https://zerodha.tech/stack/)
 
@@ -277,4 +285,4 @@ MIT
 
 ---
 
-**SEO Keywords**: SSDB, SSDB Client, SSDB Driver, Node.js SSDB, Promise SSDB Client, Redis Alternative, TypeScript SSDB Client, AES-256-CBC Encrypted SSDB, Fast NoSQL Database Wrapper, ideawu ssdb client, Node.js NoSQL Client, SSDiskDB, Zerodha Tech Stack SSDB.
+**SEO Keywords**: LevelDB, Node.js LevelDB, Redis Alternative, Disk-backed Cache, Node.js Redis Alternative, Embedded NoSQL Database, SSDiskDB, SSDB Inspired, LevelDB Cache, Encrypted LevelDB, LevelDB HTTP Server, Zerodha Tech Stack, LevelDB Node.js.
