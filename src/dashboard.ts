@@ -6,6 +6,26 @@ import { SSDiskDBClient } from "./index";
 // Track client heartbeats globally/module level
 const activeHeartbeats = new Map<string, number>();
 
+interface SessionData {
+  username: string;
+  userRole: string;
+  expiresAt: number;
+}
+const sessions = new Map<string, SessionData>();
+
+function parseCookies(cookieHeader?: string): Record<string, string> {
+  const list: Record<string, string> = {};
+  if (!cookieHeader) return list;
+  cookieHeader.split(";").forEach(cookie => {
+    const parts = cookie.split("=");
+    const name = parts.shift()?.trim();
+    if (name) {
+      list[name] = decodeURIComponent(parts.join("="));
+    }
+  });
+  return list;
+}
+
 export interface DashboardServer {
   close(): Promise<void>;
 }
@@ -75,7 +95,7 @@ async function validateApiKey(client: SSDiskDBClient, ip: string, serverId?: str
 }
 
 // Function to generate the HTML for the dashboard
-function getDashboardHtml(username: string): string {
+function getDashboardHtml(username: string, role: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -485,7 +505,7 @@ function getDashboardHtml(username: string): string {
       <p style="font-size: 0.875rem; color: var(--text-muted);">Local Embedded Cache Console</p>
     </div>
     <div class="user-info">
-      <span>User: <strong>${username}</strong></span>
+      <span>User: <strong>${username}</strong> (${role})</span>
       <button class="btn btn-secondary" onclick="logout(this)">Logout</button>
     </div>
   </header>
@@ -509,6 +529,7 @@ function getDashboardHtml(username: string): string {
     <div class="tabs-container">
       <button class="tab-btn active" id="tab-btn-keys" onclick="switchTab('keys')">Cache Keys</button>
       <button class="tab-btn" id="tab-btn-servers" onclick="switchTab('servers')">Allowed Servers</button>
+      <button class="tab-btn" id="tab-btn-subaccounts" onclick="switchTab('subaccounts')" style="display: ${role === 'admin' ? 'block' : 'none'};">Sub-accounts</button>
       <button class="tab-btn" id="tab-btn-docs" onclick="switchTab('docs')">Documentation Docs</button>
     </div>
 
@@ -553,8 +574,9 @@ function getDashboardHtml(username: string): string {
     <!-- Allowed Servers Section -->
     <div id="allowed-servers-section" style="display: none;">
       <div class="toolbar">
-        <div style="display: flex; gap: 0.5rem; width: 100%; max-width: 500px;">
-          <input type="text" class="form-control" id="new-server-address" placeholder="Server IP or Hostname (e.g. 10.0.0.5)">
+        <div style="display: flex; gap: 0.5rem; width: 100%; max-width: 600px; flex-wrap: wrap;">
+          <input type="text" class="form-control" id="new-server-address" placeholder="Server IP or ID (e.g. server-a)" style="flex: 1; min-width: 180px;">
+          <input type="text" class="form-control" id="new-server-apikey" placeholder="API Key (optional, auto-generated if blank)" style="flex: 1; min-width: 220px;">
           <button class="btn btn-success" id="btn-add-server" onclick="addAllowedServer()" style="white-space: nowrap;">
             Allow Server
           </button>
@@ -575,6 +597,58 @@ function getDashboardHtml(username: string): string {
             </tr>
           </thead>
           <tbody id="servers-table-body">
+            <!-- Dynamically filled -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Sub-accounts Section -->
+    <div id="subaccounts-section" style="display: none;">
+      <div class="toolbar">
+        <button class="btn btn-success" onclick="openCreateSubaccountForm()">Create Sub-account</button>
+        <button class="btn btn-secondary" onclick="loadSubaccounts()">Refresh</button>
+      </div>
+
+      <!-- Create Sub-account Form (Inline Card) -->
+      <div id="subaccount-form-container" style="display: none; background-color: var(--card-bg); border: 1px solid var(--border-color); border-radius: 0.5rem; padding: 1.5rem; max-width: 500px; margin-bottom: 2rem; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3); animation: slideDown 0.2s ease-out;">
+        <h3 style="margin-top: 0; margin-bottom: 1.25rem; font-size: 1.1rem; font-weight: 600; color: white;">Create Sub-account</h3>
+        <div style="margin-bottom: 1rem;">
+          <label style="display: block; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem;">Username</label>
+          <input type="text" class="form-control" id="sub-new-username" placeholder="e.g. junior_dev" style="width: 100%;">
+        </div>
+        <div style="margin-bottom: 1rem;">
+          <label style="display: block; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem;">Password</label>
+          <input type="password" class="form-control" id="sub-new-password" placeholder="••••••••" style="width: 100%;">
+        </div>
+        <div style="margin-bottom: 1.25rem;">
+          <label style="display: block; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem;">Role</label>
+          <select class="form-control" id="sub-new-role" style="width: 100%; background-color: var(--bg-color); color: white; border: 1px solid var(--border-color); border-radius: 0.375rem; padding: 0.5rem;">
+            <option value="junior">Junior Dev (Read-only)</option>
+            <option value="senior">Senior Dev (Read/Write)</option>
+          </select>
+        </div>
+        <div style="margin-bottom: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border-color);">
+          <label style="display: block; font-size: 0.85rem; color: #fca5a5; margin-bottom: 0.5rem; font-weight: 600;">Confirm with Admin Credentials</label>
+          <input type="password" class="form-control" id="sub-admin-password" placeholder="Enter Admin Password" style="width: 100%;">
+        </div>
+        <div style="display: flex; justify-content: flex-end; gap: 0.75rem;">
+          <button class="btn btn-secondary" onclick="closeCreateSubaccountForm()">Cancel</button>
+          <button class="btn btn-success" id="btn-save-subaccount" onclick="createSubaccount()">Create Account</button>
+        </div>
+      </div>
+
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Username</th>
+              <th>Role</th>
+              <th>Created At</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="subaccounts-table-body">
             <!-- Dynamically filled -->
           </tbody>
         </table>
@@ -842,6 +916,8 @@ await db.zdel("leaderboard", "player1");</pre>
   <div class="toast" id="toast">Database updated successfully</div>
 
   <script>
+    const userRole = '${role}';
+    const currentUsername = '${username}';
     let allKeys = [];
 
     async function loadKeys(isManual = false) {
@@ -914,7 +990,7 @@ await db.zdel("leaderboard", "player1");</pre>
           <td><div class="key-value">\${escapeHtml(displayVal)}</div></td>
           <td class="actions">
             <button class="btn btn-secondary" style="padding: 0.25rem 0.5rem;" onclick="viewDetail('\${item.rawKey}')">View</button>
-            <button class="btn btn-danger" style="padding: 0.25rem 0.5rem;" onclick="openDeleteModal('\${item.rawKey}')">Delete</button>
+            \${userRole === 'junior' ? '' : \`<button class="btn btn-danger" style="padding: 0.25rem 0.5rem;" onclick="openDeleteModal('\${item.rawKey}')">Delete</button>\`}
           </td>
         \`;
         tbody.appendChild(tr);
@@ -974,16 +1050,20 @@ await db.zdel("leaderboard", "player1");</pre>
       const keysSection = document.getElementById('cache-keys-section');
       const serversSection = document.getElementById('allowed-servers-section');
       const docsSection = document.getElementById('documentation-section');
+      const subaccountsSection = document.getElementById('subaccounts-section');
       const btnKeys = document.getElementById('tab-btn-keys');
       const btnServers = document.getElementById('tab-btn-servers');
       const btnDocs = document.getElementById('tab-btn-docs');
+      const btnSubaccounts = document.getElementById('tab-btn-subaccounts');
 
       keysSection.style.display = 'none';
       serversSection.style.display = 'none';
       docsSection.style.display = 'none';
+      if (subaccountsSection) subaccountsSection.style.display = 'none';
       btnKeys.classList.remove('active');
       btnServers.classList.remove('active');
       btnDocs.classList.remove('active');
+      if (btnSubaccounts) btnSubaccounts.classList.remove('active');
 
       if (tabName === 'keys') {
         keysSection.style.display = 'block';
@@ -996,6 +1076,10 @@ await db.zdel("leaderboard", "player1");</pre>
       } else if (tabName === 'docs') {
         docsSection.style.display = 'block';
         btnDocs.classList.add('active');
+      } else if (tabName === 'subaccounts') {
+        if (subaccountsSection) subaccountsSection.style.display = 'block';
+        if (btnSubaccounts) btnSubaccounts.classList.add('active');
+        loadSubaccounts();
       }
     }
 
@@ -1055,14 +1139,17 @@ await db.zdel("leaderboard", "player1");</pre>
           <td>
             <div style="display: flex; gap: 0.5rem; align-items: center;">
               <code style="background-color: var(--bg-color); padding: 0.2rem 0.4rem; border-radius: 0.25rem; border: 1px solid var(--border-color); font-size: 0.8rem; font-family: monospace;">\${escapeHtml(srv.apiKey)}</code>
-              <button class="btn btn-secondary" style="padding: 0.1rem 0.3rem; font-size: 0.75rem;" onclick="copyToClipboard('\${srv.apiKey}')">Copy</button>
+              \${userRole === 'admin' ? \`<button class="btn btn-secondary" style="padding: 0.1rem 0.3rem; font-size: 0.75rem;" onclick="copyToClipboard('\${srv.apiKey}')">Copy</button>\` : ''}
             </div>
           </td>
           <td>\${escapeHtml(srv.lastHeartbeat)}</td>
           <td class="actions">
-            <button class="btn \${blockBtnClass}" style="padding: 0.25rem 0.5rem; \${blockBtnStyle}" onclick="toggleBlockServer('\${srv.address}', this)">\${blockBtnText}</button>
-            <button class="btn btn-secondary" style="padding: 0.25rem 0.5rem;" onclick="reissueServerKey('\${srv.address}', this)">Reissue Key</button>
-            <button class="btn btn-danger" style="padding: 0.25rem 0.5rem;" onclick="deleteAllowedServer('\${srv.address}', this)">Remove</button>
+            \${userRole === 'junior'
+              ? '<span>No actions allowed</span>'
+              : \`<button class="btn \${blockBtnClass}" style="padding: 0.25rem 0.5rem; \${blockBtnStyle}" onclick="toggleBlockServer('\${srv.address}', this)">\${blockBtnText}</button>
+                 \${userRole === 'admin' ? \`<button class="btn btn-secondary" style="padding: 0.25rem 0.5rem;" onclick="reissueServerKey('\${srv.address}', this)">Reissue Key</button>\` : ''}
+                 <button class="btn btn-danger" style="padding: 0.25rem 0.5rem;" onclick="deleteAllowedServer('\${srv.address}', this)">Remove</button>\`
+            }
           </td>
         \`;
         tbody.appendChild(tr);
@@ -1137,8 +1224,10 @@ await db.zdel("leaderboard", "player1");</pre>
     }
 
     async function addAllowedServer() {
-      const input = document.getElementById('new-server-address');
-      const address = input.value.trim();
+      const inputAddr = document.getElementById('new-server-address');
+      const inputKey = document.getElementById('new-server-apikey');
+      const address = inputAddr.value.trim();
+      const apiKey = inputKey.value.trim();
       if (!address) {
         showToast('Please enter a server IP or Hostname', true);
         return;
@@ -1156,11 +1245,12 @@ await db.zdel("leaderboard", "player1");</pre>
         const res = await fetch('/api/servers', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ address })
+          body: JSON.stringify({ address, apiKey })
         });
         if (res.ok) {
           showToast('Server allowed successfully');
-          input.value = '';
+          inputAddr.value = '';
+          if (inputKey) inputKey.value = '';
           loadServers();
         } else {
           showToast('Failed to allow server', true);
@@ -1446,7 +1536,7 @@ await db.zdel("leaderboard", "player1");</pre>
         btn.innerHTML = '<span class="spinner" style="width: 0.75rem; height: 0.75rem; border-width: 1.5px;"></span> Logging out...';
       }
       var xmlhttp = new XMLHttpRequest();
-      xmlhttp.open("GET", "/api/keys", true, "logout", "logout");
+      xmlhttp.open("POST", "/api/logout", true);
       xmlhttp.send();
       xmlhttp.onreadystatechange = function() {
         if (xmlhttp.readyState === 4) {
@@ -1454,17 +1544,521 @@ await db.zdel("leaderboard", "player1");</pre>
             btn.disabled = false;
             btn.innerHTML = originalHtml;
           }
-          if (xmlhttp.status === 401) {
-            window.location.reload();
-          } else {
-            window.location.reload();
-          }
+          window.location.reload();
         }
       }
     }
 
+    function openCreateSubaccountForm() {
+      document.getElementById('sub-new-username').value = '';
+      document.getElementById('sub-new-password').value = '';
+      document.getElementById('sub-new-role').value = 'junior';
+      document.getElementById('sub-admin-password').value = '';
+      document.getElementById('subaccount-form-container').style.display = 'block';
+    }
+
+    function closeCreateSubaccountForm() {
+      document.getElementById('subaccount-form-container').style.display = 'none';
+    }
+
+    async function createSubaccount() {
+      const username = document.getElementById('sub-new-username').value.trim();
+      const password = document.getElementById('sub-new-password').value;
+      const role = document.getElementById('sub-new-role').value;
+      const adminPassword = document.getElementById('sub-admin-password').value;
+
+      if (!username || !password || !adminPassword) {
+        showToast('All fields are required', true);
+        return;
+      }
+
+      const btn = document.getElementById('btn-save-subaccount');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> Creating...';
+
+      try {
+        const res = await fetch('/api/subaccounts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password, role, adminPassword })
+        });
+        if (res.ok) {
+          showToast('Sub-account created successfully');
+          closeCreateSubaccountForm();
+          loadSubaccounts();
+        } else {
+          const text = await res.text();
+          showToast(text || 'Failed to create sub-account', true);
+        }
+      } catch (err) {
+        showToast('Server error during creation', true);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = 'Create Account';
+      }
+    }
+
+    async function loadSubaccounts() {
+      const tbody = document.getElementById('subaccounts-table-body');
+      tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;"><span class="spinner"></span> Loading sub-accounts...</td></tr>';
+
+      try {
+        const res = await fetch('/api/subaccounts');
+        if (res.status === 403) {
+          tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: #f87171; padding: 2rem;">Access Denied (Only Admins can view/manage sub-accounts)</td></tr>';
+          return;
+        }
+        if (res.ok) {
+          const list = await res.json();
+          if (list.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">No sub-accounts registered.</td></tr>';
+            return;
+          }
+          tbody.innerHTML = '';
+          list.forEach(item => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = \`
+              <td style="color: white; font-weight: 500;">\${escapeHtml(item.username)}</td>
+              <td><span style="background-color: \${item.role === 'senior' ? 'rgba(59, 130, 246, 0.15)' : 'rgba(234, 179, 8, 0.1)'}; color: \${item.role === 'senior' ? '#60a5fa' : '#facc15'}; padding: 0.15rem 0.5rem; border-radius: 0.25rem; font-size: 0.8rem; font-weight: 500;">\${item.role}</span></td>
+              <td style="color: var(--text-muted); font-size: 0.85rem;">\${item.createdAt}</td>
+              <td>
+                <button class="btn btn-secondary" onclick="deleteSubaccount('\${item.username}', this)" style="padding: 0.25rem 0.5rem; font-size: 0.8rem; background-color: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.2);">
+                  Delete
+                </button>
+              </td>
+            \`;
+            tbody.appendChild(tr);
+          });
+        } else {
+          tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">Failed to load sub-accounts.</td></tr>';
+        }
+      } catch (err) {
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">Server error loading sub-accounts.</td></tr>';
+      }
+    }
+
+    async function deleteSubaccount(subUsername, btn) {
+      const adminPassword = prompt(\`Enter Admin Password to delete sub-account "\${subUsername}":\`);
+      if (adminPassword === null) return;
+      if (!adminPassword) {
+        showToast('Admin password is required to verify', true);
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerHTML = 'Deleting...';
+
+      try {
+        const res = await fetch('/api/subaccounts', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: subUsername, adminPassword })
+        });
+        if (res.ok) {
+          showToast('Sub-account deleted');
+          loadSubaccounts();
+        } else {
+          const text = await res.text();
+          showToast(text || 'Failed to delete sub-account', true);
+        }
+      } catch (err) {
+        showToast('Server error during deletion', true);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = 'Delete';
+      }
+    }
+
     // Load keys on start
-    window.onload = loadKeys;
+    window.onload = function() {
+      loadKeys();
+      if (userRole === 'junior') {
+        const addBtn = document.querySelector('button[onclick="openAddModal()"]');
+        if (addBtn) addBtn.style.display = 'none';
+        
+        const flushBtn = document.querySelector('button[onclick="openFlushModal()"]');
+        if (flushBtn) flushBtn.style.display = 'none';
+
+        const serverAddSection = document.querySelector('#allowed-servers-section .toolbar div');
+        if (serverAddSection) serverAddSection.style.display = 'none';
+      } else if (userRole === 'senior') {
+        const flushBtn = document.querySelector('button[onclick="openFlushModal()"]');
+        if (flushBtn) flushBtn.style.display = 'none';
+      }
+    };
+  </script>
+</body>
+</html>`;
+}
+function getLoginHtml(): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login - SSDiskDB Insights</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-color: #0f172a;
+      --card-bg: rgba(30, 41, 59, 0.7);
+      --border-color: rgba(255, 255, 255, 0.08);
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent-blue: #3b82f6;
+      --accent-green: #10b981;
+      --accent-red: #ef4444;
+      --font-family: 'Inter', -apple-system, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      font-family: var(--font-family);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* Glow Orbs in Background */
+    .glow-orb {
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(100px);
+      opacity: 0.15;
+      pointer-events: none;
+      z-index: 0;
+    }
+    .orb-1 {
+      width: 350px;
+      height: 350px;
+      background: var(--accent-blue);
+      top: 15%;
+      left: 15%;
+      animation: float1 15s infinite alternate ease-in-out;
+    }
+    .orb-2 {
+      width: 400px;
+      height: 400px;
+      background: var(--accent-green);
+      bottom: 15%;
+      right: 15%;
+      animation: float2 18s infinite alternate ease-in-out;
+    }
+
+    @keyframes float1 {
+      0% { transform: translate(0, 0) scale(1); }
+      100% { transform: translate(50px, -30px) scale(1.15); }
+    }
+    @keyframes float2 {
+      0% { transform: translate(0, 0) scale(1.1); }
+      100% { transform: translate(-60px, 40px) scale(0.9); }
+    }
+
+    /* Login Card Container */
+    .login-container {
+      width: 100%;
+      max-width: 440px;
+      padding: 1.5rem;
+      z-index: 10;
+    }
+
+    .login-card {
+      background: var(--card-bg);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--border-color);
+      border-radius: 1.25rem;
+      padding: 2.5rem;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+      animation: slideUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+
+    @keyframes slideUp {
+      from {
+        transform: translateY(40px);
+        opacity: 0;
+      }
+      to {
+        transform: translateY(0);
+        opacity: 1;
+      }
+    }
+
+    .header {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+
+    .logo {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 3.5rem;
+      height: 3.5rem;
+      background: linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(16, 185, 129, 0.2));
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      border-radius: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    .logo svg {
+      width: 1.75rem;
+      height: 1.75rem;
+      fill: none;
+      stroke: url(#logo-grad);
+      stroke-width: 2;
+    }
+
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      background: linear-gradient(to right, #60a5fa, #34d399);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 0.5rem;
+    }
+
+    .subtitle {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+    }
+
+    /* Form Fields */
+    .form-group {
+      margin-bottom: 1.5rem;
+      position: relative;
+    }
+
+    .form-label {
+      display: block;
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      margin-bottom: 0.5rem;
+      transition: color 0.2s ease;
+    }
+
+    .input-wrapper {
+      position: relative;
+    }
+
+    .form-input {
+      width: 100%;
+      background: rgba(15, 23, 42, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 0.75rem;
+      color: var(--text-main);
+      padding: 0.8rem 1rem;
+      font-size: 0.95rem;
+      font-family: inherit;
+      outline: none;
+      transition: all 0.2s ease;
+    }
+
+    .form-input:focus {
+      border-color: var(--accent-blue);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+      background: rgba(15, 23, 42, 0.8);
+    }
+
+    .form-group:focus-within .form-label {
+      color: var(--accent-blue);
+    }
+
+    /* Error Message Alert */
+    .error-box {
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+      color: #fca5a5;
+      padding: 0.8rem 1rem;
+      border-radius: 0.75rem;
+      font-size: 0.85rem;
+      margin-bottom: 1.5rem;
+      display: none;
+      align-items: center;
+      gap: 0.5rem;
+      animation: fadeIn 0.3s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-5px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Button */
+    .btn-submit {
+      width: 100%;
+      background: linear-gradient(135deg, var(--accent-blue), var(--accent-green));
+      color: white;
+      font-weight: 600;
+      padding: 0.85rem;
+      border-radius: 0.75rem;
+      border: none;
+      cursor: pointer;
+      font-size: 0.95rem;
+      transition: all 0.2s ease;
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+    }
+
+    .btn-submit:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 20px rgba(59, 130, 246, 0.3);
+      filter: brightness(1.05);
+    }
+
+    .btn-submit:active:not(:disabled) {
+      transform: translateY(0);
+    }
+
+    .btn-submit:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    /* Spinner */
+    .spinner {
+      display: inline-block;
+      width: 1.25rem;
+      height: 1.25rem;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-radius: 50%;
+      border-top-color: white;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Footer branding */
+    .footer {
+      text-align: center;
+      margin-top: 1.5rem;
+      font-size: 0.8rem;
+      color: rgba(255, 255, 255, 0.3);
+    }
+  </style>
+</head>
+<body>
+  <!-- Glow effects -->
+  <div class="glow-orb orb-1"></div>
+  <div class="glow-orb orb-2"></div>
+
+  <svg style="position: absolute; width: 0; height: 0;" width="0" height="0">
+    <defs>
+      <linearGradient id="logo-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#60a5fa" />
+        <stop offset="100%" stop-color="#34d399" />
+      </linearGradient>
+    </defs>
+  </svg>
+
+  <div class="login-container">
+    <div class="login-card">
+      <div class="header">
+        <div class="logo">
+          <svg viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0v3.75" />
+          </svg>
+        </div>
+        <h1>SSDiskDB Insights</h1>
+        <p class="subtitle">Enter credentials to manage your database</p>
+      </div>
+
+      <div class="error-box" id="error-box">
+        <svg style="width: 1.25rem; height: 1.25rem; flex-shrink: 0;" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
+        </svg>
+        <span id="error-message"></span>
+      </div>
+
+      <form id="login-form" onsubmit="handleLogin(event)">
+        <div class="form-group">
+          <label class="form-label" for="username">Username</label>
+          <div class="input-wrapper">
+            <input class="form-input" type="text" id="username" required autocomplete="username" placeholder="e.g. admin">
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 2rem;">
+          <label class="form-label" for="password">Password</label>
+          <div class="input-wrapper">
+            <input class="form-input" type="password" id="password" required autocomplete="current-password" placeholder="••••••••">
+          </div>
+        </div>
+
+        <button class="btn-submit" type="submit" id="btn-submit">
+          <span>Sign In</span>
+        </button>
+      </form>
+    </div>
+    <div class="footer">
+      SSDiskDB &copy; 2026. Inspired by SSDB & LevelDB.
+    </div>
+  </div>
+
+  <script>
+    async function handleLogin(event) {
+      event.preventDefault();
+      const userEl = document.getElementById('username');
+      const passEl = document.getElementById('password');
+      const submitBtn = document.getElementById('btn-submit');
+      const errorBox = document.getElementById('error-box');
+      const errorMsg = document.getElementById('error-message');
+
+      const username = userEl.value.trim();
+      const password = passEl.value;
+
+      if (!username || !password) return;
+
+      errorBox.style.display = 'none';
+
+      submitBtn.disabled = true;
+      const originalText = submitBtn.innerHTML;
+      submitBtn.innerHTML = '<span class="spinner"></span>';
+
+      try {
+        const response = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+
+        if (response.ok) {
+          window.location.href = '/';
+        } else {
+          let errorText = 'Invalid username or password';
+          try {
+            const data = await response.json();
+            if (data && data.error) errorText = data.error;
+          } catch(e) {}
+          
+          errorMsg.textContent = errorText;
+          errorBox.style.display = 'flex';
+          submitBtn.disabled = false;
+          submitBtn.innerHTML = originalText;
+        }
+      } catch (err) {
+        errorMsg.textContent = 'Server connection failed';
+        errorBox.style.display = 'flex';
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = originalText;
+      }
+    }
   </script>
 </body>
 </html>`;
@@ -1581,45 +2175,169 @@ export function startDashboardServer(
       // 1. Check if it's a remote client API request
       const isClientApi = ["/api/handshake", "/api/heartbeat", "/api/rpc"].includes(url);
 
-      let creds = { username: "manoj" };
+      let authenticated = false;
+      let userRole = "";
+      let reqUsername = "";
+
       if (!isClientApi) {
-        // Dashboard Basic Auth check
-        const authHeader = req.headers.authorization;
-        if (!authHeader || !authHeader.startsWith("Basic ")) {
-          res.writeHead(401, {
-            "WWW-Authenticate": 'Basic realm="SSDiskDB Dashboard"',
-            "Content-Type": "text/plain"
-          });
-          res.end("Unauthorized");
-          return;
+        // 1. Extract and check session cookie
+        const cookies = parseCookies(req.headers.cookie);
+        const sessionToken = cookies.session;
+        if (sessionToken && sessions.has(sessionToken)) {
+          const sessionData = sessions.get(sessionToken)!;
+          if (Date.now() < sessionData.expiresAt) {
+            authenticated = true;
+            userRole = sessionData.userRole;
+            reqUsername = sessionData.username;
+          } else {
+            sessions.delete(sessionToken);
+          }
         }
 
-        // Parse credentials
-        const token = authHeader.substring(6);
-        const decoded = Buffer.from(token, "base64").toString("utf8");
-        const parts = decoded.split(":");
-        const reqUsername = parts[0];
-        const reqPassword = parts[1] || "";
+        // 2. Fallback: Check Basic Auth proactively (helpful for programmatic scripts / retrocompatibility)
+        if (!authenticated && req.headers.authorization && req.headers.authorization.startsWith("Basic ")) {
+          try {
+            const token = req.headers.authorization.substring(6);
+            const decoded = Buffer.from(token, "base64").toString("utf8");
+            const parts = decoded.split(":");
+            const basicUser = parts[0];
+            const basicPass = parts[1] || "";
+            const storedCreds = await getCredentials();
+            const inputHash = crypto.createHash("sha256").update(basicPass).digest("hex");
 
-        // Load stored credentials
-        const storedCreds = await getCredentials();
-        creds = storedCreds;
-        const inputHash = crypto.createHash("sha256").update(reqPassword).digest("hex");
+            if (basicUser === storedCreds.username && inputHash === storedCreds.passwordHash) {
+              authenticated = true;
+              userRole = "admin";
+              reqUsername = basicUser;
+            } else {
+              const db = (client as any).db;
+              const subRaw = await db.get("config:subaccount:" + basicUser);
+              if (subRaw) {
+                const subData = JSON.parse(subRaw);
+                if (inputHash === subData.passwordHash) {
+                  authenticated = true;
+                  userRole = subData.role || "junior";
+                  reqUsername = basicUser;
+                }
+              }
+            }
+          } catch (e) {}
+        }
 
-        if (reqUsername !== storedCreds.username || inputHash !== storedCreds.passwordHash) {
-          res.writeHead(401, {
-            "WWW-Authenticate": 'Basic realm="SSDiskDB Dashboard"',
-            "Content-Type": "text/plain"
-          });
-          res.end("Unauthorized");
-          return;
+        // Handle unauthenticated requests
+        if (!authenticated) {
+          if (url === "/api/login" && method === "POST") {
+            // Allow login endpoint to proceed
+          } else if (url === "/api/logout") {
+            // Allow logout endpoint to proceed
+          } else if (url.startsWith("/api/")) {
+            res.writeHead(401, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Unauthorized" }));
+            return;
+          } else {
+            res.writeHead(401, { "Content-Type": "text/html" });
+            res.end(getLoginHtml());
+            return;
+          }
+        }
+
+        // Store user details on request
+        if (authenticated) {
+          (req as any).userRole = userRole;
+          (req as any).username = reqUsername;
         }
       }
 
       // Serve UI
       if (url === "/" || url === "/index.html") {
         res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(getDashboardHtml(creds.username));
+        res.end(getDashboardHtml((req as any).username, (req as any).userRole));
+        return;
+      }
+
+      // API: Login
+      if (url === "/api/login" && method === "POST") {
+        let body = "";
+        req.on("data", chunk => { body += chunk; });
+        req.on("end", async () => {
+          try {
+            const payload = JSON.parse(body);
+            const loginUsername = payload.username;
+            const loginPassword = payload.password;
+            if (!loginUsername || !loginPassword) {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "Username and password are required" }));
+              return;
+            }
+
+            const storedCreds = await getCredentials();
+            const inputHash = crypto.createHash("sha256").update(loginPassword).digest("hex");
+
+            let targetRole = "admin";
+            let isAuth = false;
+
+            if (loginUsername === storedCreds.username && inputHash === storedCreds.passwordHash) {
+              isAuth = true;
+              targetRole = "admin";
+            } else {
+              // Check sub-accounts
+              try {
+                const db = (client as any).db;
+                const subRaw = await db.get("config:subaccount:" + loginUsername);
+                if (subRaw) {
+                  const subData = JSON.parse(subRaw);
+                  if (inputHash === subData.passwordHash) {
+                    isAuth = true;
+                    targetRole = subData.role || "junior";
+                  }
+                }
+              } catch (e) {}
+            }
+
+            if (isAuth) {
+              const sessionId = crypto.randomBytes(32).toString("hex");
+              sessions.set(sessionId, {
+                username: loginUsername,
+                userRole: targetRole,
+                expiresAt: Date.now() + 24 * 60 * 60 * 1000 // 24 hours
+              });
+              res.writeHead(200, {
+                "Set-Cookie": `session=${sessionId}; HttpOnly; Path=/; SameSite=Strict; Max-Age=86400`,
+                "Content-Type": "application/json"
+              });
+              res.end(JSON.stringify({ status: "ok", role: targetRole, username: loginUsername }));
+            } else {
+              res.writeHead(401, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "Invalid username or password" }));
+            }
+          } catch (e: any) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Bad Request: " + e.message }));
+          }
+        });
+        return;
+      }
+
+      // API: Logout
+      if (url === "/api/logout") {
+        const cookies = parseCookies(req.headers.cookie);
+        const token = cookies.session;
+        if (token) {
+          sessions.delete(token);
+        }
+        if (method === "GET") {
+          res.writeHead(302, {
+            "Set-Cookie": "session=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0",
+            "Location": "/"
+          });
+          res.end();
+        } else {
+          res.writeHead(200, {
+            "Set-Cookie": "session=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0",
+            "Content-Type": "application/json"
+          });
+          res.end(JSON.stringify({ status: "ok" }));
+        }
         return;
       }
 
@@ -1806,7 +2524,7 @@ export function startDashboardServer(
               address: addr,
               status,
               blocked: isBlocked,
-              apiKey: data.apiKey || "",
+              apiKey: (req as any).userRole === "admin" ? (data.apiKey || "") : "••••••••",
               lastHeartbeat: lastHb ? new Date(lastHb).toISOString() : "Never"
             });
           }
@@ -1821,6 +2539,11 @@ export function startDashboardServer(
 
       // API: Add Allowed Server
       if (url === "/api/servers" && method === "POST") {
+        if ((req as any).userRole === "junior") {
+          res.writeHead(403, { "Content-Type": "text/plain" });
+          res.end("Forbidden: Junior Developers have read-only access");
+          return;
+        }
         let body = "";
         req.on("data", chunk => { body += chunk; });
         req.on("end", async () => {
@@ -1833,7 +2556,7 @@ export function startDashboardServer(
               return;
             }
             const db = (client as any).db;
-            const apiKey = "ssdb_" + crypto.randomBytes(16).toString("hex");
+            const apiKey = payload.apiKey || ("ssdb_" + crypto.randomBytes(16).toString("hex"));
             await db.put("config:server:" + address, JSON.stringify({ registeredAt: Date.now(), apiKey, status: "allowed" }));
             res.writeHead(200, { "Content-Type": "text/plain" });
             res.end("OK");
@@ -1847,6 +2570,11 @@ export function startDashboardServer(
 
       // API: Remove Allowed Server
       if (url === "/api/servers" && method === "DELETE") {
+        if ((req as any).userRole === "junior") {
+          res.writeHead(403, { "Content-Type": "text/plain" });
+          res.end("Forbidden: Junior Developers have read-only access");
+          return;
+        }
         let body = "";
         req.on("data", chunk => { body += chunk; });
         req.on("end", async () => {
@@ -1873,6 +2601,11 @@ export function startDashboardServer(
 
       // API: Toggle Block/Restrict Server
       if (url === "/api/servers/toggle-block" && method === "POST") {
+        if ((req as any).userRole === "junior") {
+          res.writeHead(403, { "Content-Type": "text/plain" });
+          res.end("Forbidden: Junior Developers have read-only access");
+          return;
+        }
         let body = "";
         req.on("data", chunk => { body += chunk; });
         req.on("end", async () => {
@@ -1906,6 +2639,11 @@ export function startDashboardServer(
 
       // API: Reissue API Key
       if (url === "/api/servers/reissue-key" && method === "POST") {
+        if ((req as any).userRole !== "admin") {
+          res.writeHead(403, { "Content-Type": "text/plain" });
+          res.end("Forbidden: Only Administrators can reissue API keys");
+          return;
+        }
         let body = "";
         req.on("data", chunk => { body += chunk; });
         req.on("end", async () => {
@@ -1938,8 +2676,120 @@ export function startDashboardServer(
         return;
       }
 
+      // API: Get Sub-accounts
+      if (url === "/api/subaccounts" && method === "GET") {
+        if ((req as any).userRole !== "admin") {
+          res.writeHead(403, { "Content-Type": "text/plain" });
+          res.end("Forbidden: Admin access only");
+          return;
+        }
+        try {
+          const db = (client as any).db;
+          const list: { username: string; role: string; createdAt: string }[] = [];
+          for await (const [key, val] of db.iterator({ gte: "config:subaccount:", lte: "config:subaccount:\xff" })) {
+            const username = key.substring("config:subaccount:".length);
+            try {
+              const data = JSON.parse(val);
+              list.push({
+                username,
+                role: data.role,
+                createdAt: data.createdAt ? new Date(data.createdAt).toISOString() : "Unknown"
+              });
+            } catch (e) {}
+          }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(list));
+        } catch (e: any) {
+          res.writeHead(500, { "Content-Type": "text/plain" });
+          res.end("Error fetching sub-accounts: " + e.message);
+        }
+        return;
+      }
+
+      // API: Create Sub-account
+      if (url === "/api/subaccounts" && method === "POST") {
+        let body = "";
+        req.on("data", chunk => { body += chunk; });
+        req.on("end", async () => {
+          try {
+            const payload = JSON.parse(body);
+            const { username, password, role, adminPassword } = payload;
+            if (!username || !password || !role || !adminPassword) {
+              res.writeHead(400, { "Content-Type": "text/plain" });
+              res.end("All fields are required");
+              return;
+            }
+
+            // Verify admin password
+            const storedCreds = await getCredentials();
+            const adminHash = crypto.createHash("sha256").update(adminPassword).digest("hex");
+            if (adminHash !== storedCreds.passwordHash) {
+              res.writeHead(401, { "Content-Type": "text/plain" });
+              res.end("Invalid Admin Password. Access Denied.");
+              return;
+            }
+
+            const db = (client as any).db;
+            const passwordHash = crypto.createHash("sha256").update(password).digest("hex");
+            await db.put("config:subaccount:" + username, JSON.stringify({
+              passwordHash,
+              role,
+              createdAt: Date.now()
+            }));
+
+            res.writeHead(200, { "Content-Type": "text/plain" });
+            res.end("OK");
+          } catch (e: any) {
+            res.writeHead(500, { "Content-Type": "text/plain" });
+            res.end("Error: " + e.message);
+          }
+        });
+        return;
+      }
+
+      // API: Delete Sub-account
+      if (url === "/api/subaccounts" && method === "DELETE") {
+        let body = "";
+        req.on("data", chunk => { body += chunk; });
+        req.on("end", async () => {
+          try {
+            const payload = JSON.parse(body);
+            const { username, adminPassword } = payload;
+            if (!username || !adminPassword) {
+              res.writeHead(400, { "Content-Type": "text/plain" });
+              res.end("Username and adminPassword are required");
+              return;
+            }
+
+            // Verify admin password
+            const storedCreds = await getCredentials();
+            const adminHash = crypto.createHash("sha256").update(adminPassword).digest("hex");
+            if (adminHash !== storedCreds.passwordHash) {
+              res.writeHead(401, { "Content-Type": "text/plain" });
+              res.end("Invalid Admin Password. Access Denied.");
+              return;
+            }
+
+            const db = (client as any).db;
+            await db.del("config:subaccount:" + username);
+
+            res.writeHead(200, { "Content-Type": "text/plain" });
+            res.end("OK");
+          } catch (e: any) {
+            res.writeHead(500, { "Content-Type": "text/plain" });
+            res.end("Error: " + e.message);
+          }
+        });
+        return;
+      }
+
       // API: Save key-value
       if (url === "/api/keys" && method === "POST") {
+        if ((req as any).userRole === "junior") {
+          res.writeHead(403, { "Content-Type": "text/plain" });
+          res.end("Forbidden: Junior Developers have read-only access");
+          return;
+        }
         let body = "";
         req.on("data", chunk => { body += chunk; });
         req.on("end", async () => {
@@ -1968,6 +2818,11 @@ export function startDashboardServer(
 
       // API: Delete key
       if (url === "/api/keys" && method === "DELETE") {
+        if ((req as any).userRole === "junior") {
+          res.writeHead(403, { "Content-Type": "text/plain" });
+          res.end("Forbidden: Junior Developers have read-only access");
+          return;
+        }
         let body = "";
         req.on("data", chunk => { body += chunk; });
         req.on("end", async () => {
@@ -2003,6 +2858,11 @@ export function startDashboardServer(
 
       // API: Flush database
       if (url === "/api/flush" && method === "POST") {
+        if ((req as any).userRole !== "admin") {
+          res.writeHead(403, { "Content-Type": "text/plain" });
+          res.end("Forbidden: Only Administrators can flush the database");
+          return;
+        }
         try {
           if (typeof (client as any).flush === "function") {
             await (client as any).flush();

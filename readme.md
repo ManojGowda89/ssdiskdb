@@ -151,7 +151,7 @@ SSDiskDB comes equipped with a built-in web console similar to Redis Insights. I
 
 ### 1. Launch via CLI (npx)
 
-You can launch the dashboard directly from your terminal using `npx`:
+You can launch the database and dashboard, or connect as a remote client directly from your terminal using `npx`:
 
 ```bash
 # Starts the local cache engine and opens the web dashboard on port 8971
@@ -159,6 +159,9 @@ npx ssdiskdb start
 
 # Start on a custom port and database directory
 npx ssdiskdb start --port 9000 --path ./my-custom-db
+
+# Connect as a remote client to a central SSDiskDB server
+npx ssdiskdb start --remote http://<central-server-ip>:8971 --apiKey <your-api-key> --serverId <your-server-id>
 ```
 
 ### 2. Configure Admin Credentials
@@ -175,8 +178,11 @@ To allow client servers to connect remotely, you must register them.
 
 #### A. Manage via CLI:
 ```bash
-# Allow a client server address and generate its API Key
+# Allow a client server address and auto-generate its API Key
 npx ssdiskdb server add 10.0.0.5 --path ./my-custom-db
+
+# Allow a client server address with a pre-defined custom API Key
+npx ssdiskdb server add 10.0.0.5 my_custom_key --path ./my-custom-db
 
 # List all allowed servers and their API Keys
 npx ssdiskdb server list --path ./my-custom-db
@@ -187,8 +193,8 @@ npx ssdiskdb server remove 10.0.0.5 --path ./my-custom-db
 
 #### B. Manage via Web Dashboard:
 In the web dashboard under the **Allowed Servers** tab, you can manage remote access in real-time:
-- **Add Connections**: Input client IP/domain to whitelist and auto-generate an API key.
-- **See & Copy Keys**: View and click to copy the generated secure `ssdb_` API keys.
+- **Add Connections**: Input client IP/domain/ID to whitelist, and optionally enter a pre-defined **API Key**. If left blank, a secure API key is automatically generated.
+- **See & Copy Keys**: View and click to copy the active API keys.
 - **Restrict/Block Access**: Click the **Block** button to temporarily restrict client access. When blocked, the client immediately receives `403 Forbidden` on all heartbeats and cache operations. Click **Allow Access** to restore connection.
 - **Reissue Key**: Click **Reissue Key** to regenerate a fresh API key. The old key is instantly invalidated, preventing unauthorized access.
 

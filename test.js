@@ -268,5 +268,249 @@ test("SSDiskDB Local Mode Integration Tests", async (t) => {
     // Cleanup
     fs.rmSync(testDbPath, { recursive: true, force: true });
   });
+
+  await t.test("Dashboard Sub-accounts & Role-Based Access Control (RBAC)", async () => {
+    const dashboardPort = 9008;
+    const testDbPath = "./test-subaccount-db";
+    const fs = require("fs");
+    fs.rmSync(testDbPath, { recursive: true, force: true });
+
+    // 1. Connect and start dashboard
+    const client = await connect({
+      storagePath: testDbPath,
+      startDashboard: true,
+      dashboardPort
+    });
+
+    const getAuthHeader = (un, pw) => ({
+      "Authorization": "Basic " + Buffer.from(`${un}:${pw}`).toString("base64")
+    });
+
+    // 2. Create sub-accounts: junior_dev (junior role) and senior_dev (senior role)
+    const resCreateJunior = await fetch(`http://localhost:${dashboardPort}/api/subaccounts`, {
+      method: "POST",
+      headers: {
+        ...getAuthHeader("manoj", "manoj"),
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        username: "junior_dev",
+        password: "junior_password",
+        role: "junior",
+        adminPassword: "manoj"
+      })
+    });
+    assert.strictEqual(resCreateJunior.status, 200);
+
+    const resCreateSenior = await fetch(`http://localhost:${dashboardPort}/api/subaccounts`, {
+      method: "POST",
+      headers: {
+        ...getAuthHeader("manoj", "manoj"),
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        username: "senior_dev",
+        password: "senior_password",
+        role: "senior",
+        adminPassword: "manoj"
+      })
+    });
+    assert.strictEqual(resCreateSenior.status, 200);
+
+    // Try creating with wrong admin password - should fail (401)
+    const resCreateFail = await fetch(`http://localhost:${dashboardPort}/api/subaccounts`, {
+      method: "POST",
+      headers: {
+        ...getAuthHeader("manoj", "manoj"),
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        username: "hacker_dev",
+        password: "hacker_password",
+        role: "senior",
+        adminPassword: "wrong_admin_password"
+      })
+    });
+    assert.strictEqual(resCreateFail.status, 401);
+
+    // 3. Test GET sub-accounts (Admin only)
+    const resListAdmin = await fetch(`http://localhost:${dashboardPort}/api/subaccounts`, {
+      headers: getAuthHeader("manoj", "manoj")
+    });
+    assert.strictEqual(resListAdmin.status, 200);
+    const subaccounts = await resListAdmin.json();
+    assert.strictEqual(subaccounts.length, 2);
+    assert.ok(subaccounts.find(s => s.username === "junior_dev" && s.role === "junior"));
+    assert.ok(subaccounts.find(s => s.username === "senior_dev" && s.role === "senior"));
+
+    // Junior request to list sub-accounts should fail (403)
+    const resListJunior = await fetch(`http://localhost:${dashboardPort}/api/subaccounts`, {
+      headers: getAuthHeader("junior_dev", "junior_password")
+    });
+    assert.strictEqual(resListJunior.status, 403);
+
+    // 4. Test RBAC permissions on writing keys
+    // Junior dev tries to set a key - should fail (403)
+    const resSetJunior = await fetch(`http://localhost:${dashboardPort}/api/keys`, {
+      method: "POST",
+      headers: {
+        ...getAuthHeader("junior_dev", "junior_password"),
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ type: "string", key: "test_key", value: "val" })
+    });
+    assert.strictEqual(resSetJunior.status, 403);
+
+    // Senior dev tries to set a key - should succeed (200)
+    const resSetSenior = await fetch(`http://localhost:${dashboardPort}/api/keys`, {
+      method: "POST",
+      headers: {
+        ...getAuthHeader("senior_dev", "senior_password"),
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ type: "string", key: "test_key", value: "val" })
+    });
+    assert.strictEqual(resSetSenior.status, 200);
+
+    // Verify key was set
+    assert.strictEqual(await client.get("test_key"), "val");
+
+    // 5. Test RBAC permissions on flushing database
+    // Senior dev tries to flush - should fail (403)
+    const resFlushSenior = await fetch(`http://localhost:${dashboardPort}/api/flush`, {
+      method: "POST",
+      headers: getAuthHeader("senior_dev", "senior_password")
+    });
+    assert.strictEqual(resFlushSenior.status, 403);
+
+    // Admin tries to flush - should succeed (200)
+    const resFlushAdmin = await fetch(`http://localhost:${dashboardPort}/api/flush`, {
+      method: "POST",
+      headers: getAuthHeader("manoj", "manoj")
+    });
+    assert.strictEqual(resFlushAdmin.status, 200);
+    assert.strictEqual(await client.get("test_key"), undefined);
+
+    // 6. Test sub-account deletion
+    const resDelSub = await fetch(`http://localhost:${dashboardPort}/api/subaccounts`, {
+      method: "DELETE",
+      headers: {
+        ...getAuthHeader("manoj", "manoj"),
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        username: "junior_dev",
+        adminPassword: "manoj"
+      })
+    });
+    assert.strictEqual(resDelSub.status, 200);
+
+    // Check list again
+    const resListFinal = await fetch(`http://localhost:${dashboardPort}/api/subaccounts`, {
+      headers: getAuthHeader("manoj", "manoj")
+    });
+    const subaccountsFinal = await resListFinal.json();
+    assert.strictEqual(subaccountsFinal.length, 1);
+    assert.strictEqual(subaccountsFinal[0].username, "senior_dev");
+
+    // Clean up
+    await client.close();
+    fs.rmSync(testDbPath, { recursive: true, force: true });
+  });
+
+  await t.test("Web Dashboard Cookie-based Session Authentication", async () => {
+    const dashboardPort = 9010;
+    const testDbPath = "./test-cookie-auth-db";
+    const fs = require("fs");
+    fs.rmSync(testDbPath, { recursive: true, force: true });
+
+    // Connect and start dashboard
+    const client = await connect({
+      storagePath: testDbPath,
+      startDashboard: true,
+      dashboardPort
+    });
+
+    // 1. Fetch root unauthenticated -> should serve Login Page HTML (Status 401)
+    const resRoot = await fetch(`http://localhost:${dashboardPort}/`);
+    assert.strictEqual(resRoot.status, 401);
+    const htmlContent = await resRoot.text();
+    assert.ok(htmlContent.includes("Login - SSDiskDB Insights"));
+    assert.ok(htmlContent.includes("username"));
+    assert.ok(htmlContent.includes("password"));
+
+    // 2. Fetch API endpoint unauthenticated -> should return 401 JSON error
+    const resKeysUnauth = await fetch(`http://localhost:${dashboardPort}/api/keys`);
+    assert.strictEqual(resKeysUnauth.status, 401);
+    const keysUnauthJson = await resKeysUnauth.json();
+    assert.deepStrictEqual(keysUnauthJson, { error: "Unauthorized" });
+
+    // 3. POST to /api/login with wrong password -> should return 401 JSON error
+    const resLoginFail = await fetch(`http://localhost:${dashboardPort}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "manoj", password: "wrong_password" })
+    });
+    assert.strictEqual(resLoginFail.status, 401);
+    const failJson = await resLoginFail.json();
+    assert.ok(failJson.error);
+
+    // 4. POST to /api/login with correct password -> should succeed, return user details, set session cookie
+    const resLoginSuccess = await fetch(`http://localhost:${dashboardPort}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "manoj", password: "manoj" })
+    });
+    assert.strictEqual(resLoginSuccess.status, 200);
+    const successJson = await resLoginSuccess.json();
+    assert.strictEqual(successJson.status, "ok");
+    assert.strictEqual(successJson.role, "admin");
+
+    // Extract session cookie from Set-Cookie header
+    const setCookie = resLoginSuccess.headers.get("set-cookie");
+    assert.ok(setCookie);
+    assert.ok(setCookie.includes("session="));
+    const match = setCookie.match(/session=[^;]+/);
+    const sessionCookie = match ? match[0] : "";
+    assert.ok(sessionCookie);
+
+    // 5. Fetch root with cookie -> should serve Dashboard UI HTML (Status 200)
+    const resDashboard = await fetch(`http://localhost:${dashboardPort}/`, {
+      headers: { "Cookie": sessionCookie }
+    });
+    assert.strictEqual(resDashboard.status, 200);
+    const dashHtml = await resDashboard.text();
+    assert.ok(dashHtml.includes("SSDiskDB Insights"));
+
+    // 6. Fetch API keys with cookie -> should succeed (Status 200)
+    const resKeysAuth = await fetch(`http://localhost:${dashboardPort}/api/keys`, {
+      headers: { "Cookie": sessionCookie }
+    });
+    assert.strictEqual(resKeysAuth.status, 200);
+    const keysArray = await resKeysAuth.json();
+    assert.deepStrictEqual(keysArray, []);
+
+    // 7. POST to /api/logout -> should succeed and clear cookie
+    const resLogout = await fetch(`http://localhost:${dashboardPort}/api/logout`, {
+      method: "POST",
+      headers: { "Cookie": sessionCookie }
+    });
+    assert.strictEqual(resLogout.status, 200);
+    const logoutJson = await resLogout.json();
+    assert.strictEqual(logoutJson.status, "ok");
+    const logoutCookie = resLogout.headers.get("set-cookie");
+    assert.ok(logoutCookie);
+    assert.ok(logoutCookie.includes("Max-Age=0"));
+
+    // 8. Fetch API keys again -> should fail with 401
+    const resKeysAfterLogout = await fetch(`http://localhost:${dashboardPort}/api/keys`, {
+      headers: { "Cookie": sessionCookie }
+    });
+    assert.strictEqual(resKeysAfterLogout.status, 401);
+
+    // Clean up
+    await client.close();
+    fs.rmSync(testDbPath, { recursive: true, force: true });
+  });
 });
 
