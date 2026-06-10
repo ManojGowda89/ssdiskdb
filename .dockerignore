@@ -1,0 +1,16 @@
+node_modules
+dist
+.git
+.gitignore
+.github
+*.log
+local-test-db
+test-cli-subaccounts-db
+test-cross-server-db
+test-dual-dashboard-1
+test-dual-dashboard-2
+test-uri-remote-db
+scratch-*
+walkthrough.md
+implementation_plan.md
+task.md

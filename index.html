@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SSDiskDB - High-Performance Disk-Backed NoSQL Database</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-color: #0b0f19;
+      --sidebar-bg: #0f172a;
+      --card-bg: #1e293b;
+      --card-border: rgba(255, 255, 255, 0.06);
+      --border-color: #334155;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent-blue: #3b82f6;
+      --accent-green: #10b981;
+      --accent-yellow: #fbbf24;
+      --accent-red: #f87171;
+      --font-family: 'Inter', sans-serif;
+      --code-font: 'Fira Code', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      font-family: var(--font-family);
+      line-height: 1.6;
+      display: flex;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: var(--bg-color);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: var(--border-color);
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--accent-blue);
+    }
+
+    /* Sidebar Navigation */
+    aside {
+      width: 280px;
+      background-color: var(--sidebar-bg);
+      border-right: 1px solid var(--border-color);
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      z-index: 100;
+      padding: 2rem 1.5rem;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    .logo-container {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 2.5rem;
+    }
+
+    .logo-container svg {
+      width: 2.25rem;
+      height: 2.25rem;
+      fill: none;
+      stroke: var(--accent-blue);
+      stroke-width: 2;
+    }
+
+    .logo-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      background: linear-gradient(to right, #60a5fa, #34d399);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .nav-list {
+      list-style-type: none;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .nav-item a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.9rem;
+      font-weight: 500;
+      display: block;
+      padding: 0.5rem 0.75rem;
+      border-radius: 0.375rem;
+      transition: all 0.2s ease;
+    }
+
+    .nav-item a:hover {
+      color: var(--text-main);
+      background-color: rgba(255, 255, 255, 0.03);
+    }
+
+    .nav-item.active a {
+      color: white;
+      background-color: rgba(59, 130, 246, 0.15);
+      border-left: 3px solid var(--accent-blue);
+      border-top-left-radius: 0;
+      border-bottom-left-radius: 0;
+    }
+
+    .nav-category {
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-top: 1.5rem;
+      margin-bottom: 0.5rem;
+      padding-left: 0.75rem;
+    }
+
+    /* Main Container */
+    main {
+      margin-left: 280px;
+      flex: 1;
+      padding: 3rem 4rem;
+      max-width: 1000px;
+    }
+
+    /* Header styling */
+    header {
+      margin-bottom: 3rem;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 2rem;
+    }
+
+    header h1 {
+      font-size: 2.5rem;
+      font-weight: 800;
+      margin-bottom: 0.5rem;
+      background: linear-gradient(to right, #60a5fa, #34d399);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .badge-container {
+      display: flex;
+      gap: 0.5rem;
+      margin-top: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      background-color: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--card-border);
+      padding: 0.25rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      text-decoration: none;
+      transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    a.badge:hover {
+      background-color: rgba(59, 130, 246, 0.12);
+      border-color: var(--accent-blue);
+      color: white;
+      transform: translateY(-1px);
+    }
+
+    main a {
+      color: var(--accent-blue);
+      text-decoration: none;
+      font-weight: 500;
+      transition: color 0.2s ease;
+    }
+
+    main a:hover {
+      color: #60a5fa;
+      text-decoration: underline;
+    }
+
+    .ref-list {
+      list-style-type: none;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      padding-left: 0.5rem;
+      margin-top: 1rem;
+    }
+    .ref-item {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.5rem;
+    }
+    .ref-icon {
+      width: 1.25rem;
+      height: 1.25rem;
+      fill: none;
+      stroke: var(--accent-blue);
+      stroke-width: 2;
+      flex-shrink: 0;
+    }
+
+    /* Section content styling */
+    section {
+      margin-bottom: 4rem;
+      scroll-margin-top: 2rem;
+    }
+
+    h2 {
+      font-size: 1.8rem;
+      font-weight: 700;
+      margin-bottom: 1.5rem;
+      color: white;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 0.5rem;
+    }
+
+    h3 {
+      font-size: 1.3rem;
+      font-weight: 600;
+      margin-top: 2rem;
+      margin-bottom: 1rem;
+      color: #cbd5e1;
+    }
+
+    p {
+      color: var(--text-muted);
+      margin-bottom: 1.25rem;
+      font-size: 0.975rem;
+    }
+
+    code {
+      font-family: var(--code-font);
+      background-color: rgba(0, 0, 0, 0.3);
+      padding: 0.2rem 0.4rem;
+      border-radius: 0.25rem;
+      font-size: 0.85rem;
+      color: var(--accent-green);
+    }
+
+    /* Code Blocks */
+    .code-block-wrapper {
+      position: relative;
+      background-color: #080c14;
+      border: 1px solid var(--border-color);
+      border-radius: 0.5rem;
+      margin-bottom: 1.5rem;
+      overflow: hidden;
+    }
+
+    pre {
+      padding: 1.25rem;
+      overflow-x: auto;
+      margin: 0;
+    }
+
+    pre code {
+      background: none;
+      padding: 0;
+      color: #e2e8f0;
+      font-size: 0.875rem;
+    }
+
+    .btn-copy {
+      position: absolute;
+      top: 0.75rem;
+      right: 0.75rem;
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      color: var(--text-muted);
+      padding: 0.35rem 0.75rem;
+      font-size: 0.75rem;
+      border-radius: 0.375rem;
+      cursor: pointer;
+      font-weight: 500;
+      transition: all 0.2s ease;
+    }
+
+    .btn-copy:hover {
+      color: white;
+      border-color: var(--accent-blue);
+      background-color: rgba(59, 130, 246, 0.1);
+    }
+
+    /* Alerts */
+    .alert {
+      padding: 1rem 1.25rem;
+      border-radius: 0.5rem;
+      margin-bottom: 1.5rem;
+      border-left: 4px solid;
+      background-color: rgba(255, 255, 255, 0.02);
+      font-size: 0.95rem;
+    }
+
+    .alert-important {
+      border-left-color: var(--accent-blue);
+      background-color: rgba(59, 130, 246, 0.03);
+    }
+    .alert-important strong {
+      color: #60a5fa;
+    }
+
+    .alert-note {
+      border-left-color: var(--accent-green);
+      background-color: rgba(16, 185, 129, 0.03);
+    }
+    .alert-note strong {
+      color: #34d399;
+    }
+
+    .alert-warning {
+      border-left-color: var(--accent-yellow);
+      background-color: rgba(251, 191, 36, 0.03);
+    }
+    .alert-warning strong {
+      color: #fbbf24;
+    }
+
+    /* Comparison Table */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 2rem;
+      font-size: 0.9rem;
+    }
+
+    th {
+      background-color: var(--sidebar-bg);
+      color: var(--text-main);
+      font-weight: 600;
+      text-align: left;
+      padding: 0.75rem 1rem;
+      border-bottom: 2px solid var(--border-color);
+    }
+
+    td {
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border-color);
+      color: var(--text-muted);
+    }
+
+    tr:hover td {
+      background-color: rgba(255, 255, 255, 0.01);
+    }
+
+    /* Mobile Hamburger Menu */
+    .menu-toggle {
+      display: none;
+      position: fixed;
+      top: 1rem;
+      right: 1rem;
+      z-index: 1000;
+      background-color: var(--card-bg);
+      border: 1px solid var(--border-color);
+      color: white;
+      padding: 0.5rem;
+      border-radius: 0.375rem;
+      cursor: pointer;
+    }
+
+    @media (max-width: 900px) {
+      aside {
+        transform: translateX(-100%);
+        transition: transform 0.3s ease;
+      }
+      aside.open {
+        transform: translateX(0);
+      }
+      main {
+        margin-left: 0;
+        padding: 2rem 1.5rem;
+      }
+      .menu-toggle {
+        display: block;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <button class="menu-toggle" id="menu-btn" onclick="toggleSidebar()">
+    <svg style="width: 1.5rem; height: 1.5rem;" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+    </svg>
+  </button>
+
+  <aside id="sidebar">
+    <div class="logo-container">
+      <svg viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0v3.75" />
+      </svg>
+      <div class="logo-title">SSDiskDB</div>
+    </div>
+
+    <ul class="nav-list">
+      <li class="nav-category">Overview</li>
+      <li class="nav-item active" id="li-introduction"><a href="#introduction">Introduction</a></li>
+      <li class="nav-item" id="li-motivation"><a href="#motivation">Motivation &amp; Inspiration</a></li>
+      <li class="nav-item" id="li-architecture"><a href="#architecture">Architecture Comparison</a></li>
+
+      <li class="nav-category">Installation</li>
+      <li class="nav-item" id="li-installation"><a href="#installation">Getting Started</a></li>
+
+      <li class="nav-category">Configuration</li>
+      <li class="nav-item" id="li-connection-options"><a href="#connection-options">Connection Options</a></li>
+      <li class="nav-item" id="li-cli"><a href="#cli">CLI Commands</a></li>
+
+      <li class="nav-category">Cloud Console</li>
+      <li class="nav-item" id="li-cloud-deployment"><a href="#cloud-deployment">Local-to-Cloud Setup</a></li>
+
+      <li class="nav-category">Methods</li>
+      <li class="nav-item" id="li-methods"><a href="#methods">Available APIs</a></li>
+
+      <li class="nav-category">Production</li>
+      <li class="nav-item" id="li-production"><a href="#production">Best Practices</a></li>
+
+      <li class="nav-category">References</li>
+      <li class="nav-item" id="li-references"><a href="#references">References &amp; Resources</a></li>
+    </ul>
+  </aside>
+
+  <main>
+    <header>
+      <h1>SSDiskDB Documentation</h1>
+      <p>A high-performance, <strong>open-source</strong>, embedded NoSQL database and key-value store <strong>built specifically for the JavaScript &amp; Node.js community</strong>, powered by Google's LevelDB.</p>
+      
+      <div class="badge-container">
+        <a class="badge" href="https://www.npmjs.com/package/ssdiskdb" target="_blank">NPM Package v1.0.2</a>
+        <a class="badge" href="https://github.com/google/leveldb" target="_blank">Google LevelDB Engine</a>
+        <a class="badge" href="https://github.com/ManojGowda89/ssdiskdb" target="_blank">GitHub Repository</a>
+        <a class="badge" href="https://hub.docker.com/r/manoj20002/ssdiskdb" target="_blank">Docker Hub Image</a>
+        <a class="badge" href="https://github.com/ideawu/ssdb" target="_blank">Inspired by SSDB</a>
+        <a class="badge" href="https://zerodha.tech/stack/" target="_blank">Inspired by Zerodha Stack</a>
+        <a class="badge" href="https://github.com/ManojGowda89/ssdiskdb/blob/main/LICENSE" target="_blank">MIT License</a>
+      </div>
+    </header>
+
+    <!-- Introduction -->
+    <section id="introduction">
+      <h2>Introduction</h2>
+      <p>
+        <strong>SSDiskDB</strong> is an <strong>open-source</strong>, embedded NoSQL caching layer and database engine <strong>built from scratch for the JavaScript &amp; Node.js community</strong> as a disk-backed alternative to Redis. In large-scale production environments, caching billions of records in memory becomes extremely expensive due to RAM pricing constraints.
+      </p>
+      <p>
+        By utilizing **Google's LevelDB** storage library, SSDiskDB stores data directly on disk (SSDs or persistent volumes) while maintaining an internal cache for fast read access, enabling near-memory speeds for hot keys while saving up to 90% of database infrastructure costs.
+      </p>
+      <div class="alert alert-note">
+        <strong>💡 Note:</strong> This is a standalone, lightweight library. It does not require installing an external SSDB server process on your machine.
+      </div>
+    </section>
+
+    <!-- Motivation & Inspiration -->
+    <section id="motivation">
+      <h2>Motivation &amp; Inspiration</h2>
+      <p>
+        The creation of <strong>SSDiskDB</strong> is inspired by <strong>SSDB</strong> and tech-industry pioneers like <strong>Zerodha</strong> (India's largest stock broker), who document their use of disk-backed databases in their <a href="https://zerodha.tech/stack/" target="_blank">Zerodha Tech Stack</a>.
+      </p>
+      
+      <h3>How the Author Discovered Disk-Backed Caching from Zerodha</h3>
+      <p>
+        During research into cost-efficient, high-volume caching architectures, the project's creator, Manoj Gowda, came across the public engineering disclosures of <strong>Zerodha</strong>. In their technical stack documentation on <a href="https://zerodha.tech" target="_blank">zerodha.tech</a>, Zerodha's engineering team detailed how they host <strong>SSDB</strong> (an open-source, disk-backed NoSQL database utilizing Google's LevelDB engine) as a key-value cache.
+      </p>
+      <p>
+        In massive production environments, storing billions of keys in memory-only databases like Redis becomes prohibitively expensive due to RAM costs. By reading Zerodha's technical posts, Manoj learned how they leveraged SSDB to write records directly to SSDs while keeping a highly optimized memory cache for hot data. This hybrid architecture allowed them to achieve near-Redis latencies at a fraction of the cost, saving massive amounts of RAM and scaling cost-effectively.
+      </p>
+      <p>
+        This discovery inspired Manoj to build <strong>SSDiskDB</strong> from scratch specifically for the JavaScript &amp; Node.js community. Instead of running a separate C++ SSDB daemon process, <strong>SSDiskDB</strong> implements these identical design principles inside an embedded Node.js library—bundling Google's LevelDB storage engine with a Redis-like API, connection pooling, security access whitelisting, and secure remote proxies.
+      </p>
+    </section>
+
+    <!-- Architecture -->
+    <section id="architecture">
+      <h2>Architecture Comparison</h2>
+      <p>
+        Here is how SSDiskDB compares to standard databases:
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Feature</th>
+            <th>Redis</th>
+            <th>SSDiskDB</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Storage Medium</strong></td>
+            <td>Primarily RAM (In-Memory)</td>
+            <td>Disk-backed (using LevelDB LSM Trees)</td>
+          </tr>
+          <tr>
+            <td><strong>Data Capacity</strong></td>
+            <td>Constrained by available system RAM</td>
+            <td>Constrained by disk capacity (up to Terabytes)</td>
+          </tr>
+          <tr>
+            <td><strong>Envelope Encryption</strong></td>
+            <td>Transport TLS only</td>
+            <td>Transport TLS + Client-Side AES-256-CBC</td>
+          </tr>
+          <tr>
+            <td><strong>Operations cost</strong></td>
+            <td>High (RAM is expensive)</td>
+            <td>Extremely Low (SSD storage is cheap)</td>
+          </tr>
+          <tr>
+            <td><strong>Data Structures</strong></td>
+            <td>Strings, Hashes, Lists, Sorted Sets, etc.</td>
+            <td>Strings, Hashes, Sorted Sets</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>How SSDiskDB builds on top of LevelDB</h3>
+      <p>
+        LevelDB is a primitive raw byte key-value engine. SSDiskDB abstracts this engine by providing structure, security, and networking:
+      </p>
+      <p>
+        - **Types Namespacing**: Maps high-level data types into flat keyspaces by appending type tags (e.g. <code>s:</code> for Strings, <code>h:</code> for Hashes, <code>z:</code> for Sorted Sets).<br>
+        - **Envelope Encryption**: Generates a cryptographically strong initialization vector (IV) per entry, encrypts values using AES-256-CBC locally, and stores raw encrypted hex strings, keeping database hosts blind to client payloads.
+      </p>
+    </section>
+
+    <!-- Installation -->
+    <section id="installation">
+      <h2>Getting Started</h2>
+      <p>You can set up SSDiskDB using three different methods:</p>
+
+      <h3>Method 1: NPM Package</h3>
+      <p>Install inside your Node.js application:</p>
+      <div class="code-block-wrapper">
+        <button class="btn-copy" onclick="copyCode(this)">Copy</button>
+        <pre><code>npm install ssdiskdb</code></pre>
+      </div>
+
+      <h3>Method 2: One-Command Shell Installer (macOS & Linux)</h3>
+      <p>Automatically verify system requirements, download Node.js (if missing), install the database, and map commands:</p>
+      <div class="code-block-wrapper">
+        <button class="btn-copy" onclick="copyCode(this)">Copy</button>
+        <pre><code>curl -fsSL https://raw.githubusercontent.com/ManojGowda89/ssdiskdb/main/install.sh | bash</code></pre>
+      </div>
+
+      <h3>Method 3: Cloud Docker Container</h3>
+      <p>Run the container directly using our pre-built image from Docker Hub (configured with volume persistence):</p>
+      <div class="code-block-wrapper">
+        <button class="btn-copy" onclick="copyCode(this)">Copy</button>
+        <pre><code>docker run -d \
+  -p 8971:8971 \
+  -v ssdb-data-volume:/data \
+  --name ssdiskdb-server \
+  manoj20002/ssdiskdb:latest</code></pre>
+      </div>
+    </section>
+
+    <!-- Connection Options -->
+    <section id="connection-options">
+      <h2>Connection Options</h2>
+      
+      <h3>1. Embedded Local Database</h3>
+      <p>Connect natively to a LevelDB instance inside your Node application:</p>
+      <div class="code-block-wrapper">
+        <button class="btn-copy" onclick="copyCode(this)">Copy</button>
+        <pre><code>const { connect } = require("ssdiskdb");
+
+(async () => {
+  const db = await connect({
+    storagePath: "./my-custom-db",
+    encryptionKey: "supersecretkey", // Enables transparent AES-256-CBC encryption
+    startDashboard: true,            // Spawns Web Insights Dashboard
+    dashboardPort: 8971
+  });
+
+  await db.set("welcome_message", "Hello World!");
+  console.log(await db.get("welcome_message"));
+
+  await db.close();
+})();</code></pre>
+      </div>
+
+      <h3>2. Single URI Scheme Configurations</h3>
+      <p>Connect programmatically using connection URIs:</p>
+      <div class="code-block-wrapper">
+        <button class="btn-copy" onclick="copyCode(this)">Copy</button>
+        <pre><code>// Standard plaintext connection
+const db = await connect("ssdiskdb://ssdb_key123@127.0.0.1:8971/server-a");
+
+// Secure connection with client-side envelope encryption key
+const dbSecure = await connect("ssdiskdb+encry://ssdb_key123@127.0.0.1:8971/server-a?key=aes-key");</code></pre>
+      </div>
+    </section>
+
+    <!-- CLI -->
+    <section id="cli">
+      <h2>CLI Commands</h2>
+      <p>SSDiskDB features a complete command-line interface to manage active servers, database nodes, credentials, and configurations:</p>
+      
+      <div class="code-block-wrapper">
+        <button class="btn-copy" onclick="copyCode(this)">Copy</button>
+        <pre><code># Start the local database engine and open the dashboard
+npx ssdiskdb start --port 8971 --path ./my-db-dir
+
+# Start a remote client directly pointing to a central cloud server
+npx ssdiskdb start ssdiskdb://ssdb_key@localhost:8971/server-a
+
+# Configure Admin user credentials
+npx ssdiskdb credentials --username myuser --password mypassword
+
+# Register a whitelisted server client
+npx ssdiskdb server add web-server-1
+
+# List all allowed client servers and active API keys
+npx ssdiskdb server list</code></pre>
+      </div>
+    </section>
+
+    <!-- Cloud Console -->
+    <section id="cloud-deployment">
+      <h2>Cloud Deployment &amp; Local Dashboard Setup</h2>
+      <p>
+        For secure production deployments, you should run your central database headlessly on the cloud (behind a VPC) and use a local dashboard instance to manage its assets securely via reverse proxy connection strings.
+      </p>
+
+      <div class="alert alert-important">
+        <strong>⚠️ Security Recommendation:</strong> Never expose your Cloud Administrative Dashboard directly to the public internet. Access cloud data securely by proxying it through your local dashboard instance.
+      </div>
+
+      <h3>Step-by-Step Walkthrough</h3>
+      <p><strong>Step 1: Deploy SSDiskDB on your cloud VPS instance:</strong></p>
+      <div class="code-block-wrapper">
+        <button class="btn-copy" onclick="copyCode(this)">Copy</button>
+        <pre><code>docker run -d -p 8971:8971 -v /var/lib/ssdb:/data --name ssdb manoj20002/ssdiskdb:latest</code></pre>
+      </div>
+
+      <p><strong>Step 2: Register a console profile on the cloud instance:</strong></p>
+      <div class="code-block-wrapper">
+        <button class="btn-copy" onclick="copyCode(this)">Copy</button>
+        <pre><code>docker exec -it ssdb node dist/cjs/cli.js server add my-workstation</code></pre>
+      </div>
+      <p>This generates an API Key. For example: <code>ssdb_c4dee067d4a23dd35da3270ddd5b2cc5</code>.</p>
+
+      <p><strong>Step 3: Copy the remote connection string:</strong></p>
+      <div class="code-block-wrapper">
+        <button class="btn-copy" onclick="copyCode(this)">Copy</button>
+        <pre><code>ssdiskdb://ssdb_c4dee067d4a23dd35da3270ddd5b2cc5@&lt;YOUR_CLOUD_IP&gt;:8971/my-workstation</code></pre>
+      </div>
+
+      <p><strong>Step 4: Launch local dashboard on your workstation to proxy cloud data:</strong></p>
+      <p>1. Start a local server: <code>npx ssdiskdb start --port 8971</code></p>
+      <p>2. Open <code>http://localhost:8971</code> in your web browser.</p>
+      <p>3. Select the <strong>Remote Connection</strong> tab.</p>
+      <p>4. Input the copied URI from Step 3 and click **Sign In**.</p>
+      <p>The local dashboard now serves as a secure proxy console to view and modify your cloud database records safely without exposing admin screens publicly.</p>
+    </section>
+
+    <!-- Methods -->
+    <section id="methods">
+      <h2>Available APIs</h2>
+      <p>Here are the core methods exposed by the client interface:</p>
+
+      <h3>Strings</h3>
+      <div class="code-block-wrapper">
+        <button class="btn-copy" onclick="copyCode(this)">Copy</button>
+        <pre><code>await db.set("key", { user: "Manoj" });
+await db.get("key"); // Returns { user: "Manoj" }
+await db.exists("key"); // Returns true
+await db.incr("counter", 5); // Increments by 5
+await db.del("key");</code></pre>
+      </div>
+
+      <h3>Hashes (Maps)</h3>
+      <div class="code-block-wrapper">
+        <button class="btn-copy" onclick="copyCode(this)">Copy</button>
+        <pre><code>await db.hset("user:100", "role", "admin");
+await db.hget("user:100", "role"); // Returns "admin"
+await db.hdel("user:100", "role");</code></pre>
+      </div>
+
+      <h3>Sorted Sets (ZSets)</h3>
+      <div class="code-block-wrapper">
+        <button class="btn-copy" onclick="copyCode(this)">Copy</button>
+        <pre><code>await db.zset("highscores", "alex", 99.5);
+await db.zget("highscores", "alex"); // Returns 99.5
+await db.zdel("highscores", "alex");</code></pre>
+      </div>
+    </section>
+
+    <!-- Production -->
+    <section id="production">
+      <h2>Best Practices &amp; Production Hardening</h2>
+      <p>
+        <strong>1. Volume Mounts</strong>: When deploying via Docker, always map your storage volume (e.g. <code>-v ssdb-volume:/data</code>). LevelDB stores tables on-disk; omitting volume tags will result in full data loss when containers restart.
+      </p>
+      <p>
+        <strong>2. Reverse Proxy and SSL</strong>: Central database consoles should be placed behind a secure reverse proxy like **Nginx** or **Caddy** to handle SSL termination (HTTPS routing).
+      </p>
+      <p>
+        <strong>3. Single Process Locking</strong>: LevelDB places a persistent <code>LOCK</code> file in its storage directory. If a secondary Node process attempts to read/write the same directory locally, it will fail throwing <code>LEVEL_LOCKED</code>. For multi-application access, run a single central server process and connect other apps as remote clients over connection URIs.
+      </p>
+      <p>
+        <strong>4. SSD Storage Selection</strong>: Since LevelDB uses Log-Structured Merge (LSM) trees writing SST files on-disk, disk IOPS is the primary performance factor. Deploying SSDiskDB on NVMe SSDs provides outstanding transaction throughput.
+      </p>
+    </section>
+
+    <!-- References -->
+    <section id="references">
+      <h2>References &amp; Resources</h2>
+      <p>Here are the key references and external resources related to SSDiskDB, including inspiration and technical dependencies:</p>
+      <ul class="ref-list">
+        <li class="ref-item">
+          <svg class="ref-icon" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" /></svg>
+          <div>
+            <a href="https://github.com/google/leveldb" target="_blank">Google LevelDB Storage Engine</a> - The high-performance key-value store library that SSDiskDB builds on top of.
+          </div>
+        </li>
+        <li class="ref-item">
+          <svg class="ref-icon" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" /></svg>
+          <div>
+            <a href="https://github.com/ideawu/ssdb" target="_blank">Official SSDB Database</a> - The fast NoSQL database server that inspired the design of this Node.js implementation.
+          </div>
+        </li>
+        <li class="ref-item">
+          <svg class="ref-icon" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" /></svg>
+          <div>
+            <a href="https://zerodha.tech/stack/" target="_blank">Zerodha Tech Stack</a> - Official list of tools and technologies self-hosted by Zerodha, showcasing their production use of SSDB.
+          </div>
+        </li>
+        <li class="ref-item">
+          <svg class="ref-icon" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" /></svg>
+          <div>
+            <a href="https://zerodha.tech" target="_blank">Zerodha Tech Blog</a> - Engineering insights, architecture patterns, and posts by Zerodha developers.
+          </div>
+        </li>
+        <li class="ref-item">
+          <svg class="ref-icon" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" /></svg>
+          <div>
+            <a href="https://github.com/ManojGowda89/ssdiskdb" target="_blank">SSDiskDB GitHub Repository</a> - Direct link to the open-source repository for issues, contributions, and documentation.
+          </div>
+        </li>
+        <li class="ref-item">
+          <svg class="ref-icon" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" /></svg>
+          <div>
+            <a href="https://www.npmjs.com/package/ssdiskdb" target="_blank">SSDiskDB NPM Package</a> - The official NPM package module for integration in Node.js applications.
+          </div>
+        </li>
+        <li class="ref-item">
+          <svg class="ref-icon" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" /></svg>
+          <div>
+            <a href="https://hub.docker.com/r/manoj20002/ssdiskdb" target="_blank">SSDiskDB Docker Hub Image</a> - Official pre-built Docker container image ready for cloud and container deployments.
+          </div>
+        </li>
+      </ul>
+    </section>
+  </main>
+
+  <script>
+    // Copy button helper
+    function copyCode(btn) {
+      const pre = btn.nextElementSibling;
+      const code = pre.querySelector('code');
+      navigator.clipboard.writeText(code.innerText).then(() => {
+        const originalText = btn.innerText;
+        btn.innerText = 'Copied!';
+        btn.style.borderColor = 'var(--accent-green)';
+        btn.style.color = 'var(--accent-green)';
+        setTimeout(() => {
+          btn.innerText = originalText;
+          btn.style.borderColor = '';
+          btn.style.color = '';
+        }, 2000);
+      });
+    }
+
+    // Toggle Mobile Sidebar
+    function toggleSidebar() {
+      const sidebar = document.getElementById('sidebar');
+      sidebar.classList.toggle('open');
+    }
+
+    // Auto active nav scroll spy
+    const sections = document.querySelectorAll('section');
+    const navItems = document.querySelectorAll('.nav-item');
+
+    window.addEventListener('scroll', () => {
+      let current = '';
+      sections.forEach(section => {
+        const sectionTop = section.offsetTop;
+        const sectionHeight = section.clientHeight;
+        if (pageYOffset >= (sectionTop - 150)) {
+          current = section.getAttribute('id');
+        }
+      });
+
+      navItems.forEach(item => {
+        item.classList.remove('active');
+        if (item.id === `li-${current}`) {
+          item.classList.add('active');
+        }
+      });
+    });
+  </script>
+</body>
+</html>
