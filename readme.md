@@ -9,7 +9,7 @@
 
 **SSDiskDB** is a high-performance, **open-source, embedded NoSQL database and key-value store built specifically for the JavaScript & Node.js community**, designed as a cost-effective, disk-backed alternative to Redis. It is built directly on top of [Google's LevelDB](https://github.com/google/leveldb) storage engine.
 
-It is **not** a wrapper or client for the C++ SSDB database server; rather, it is a standalone, lightweight database library built from scratch in TypeScript that brings Redis-like APIs (Strings, Hashes, Sorted Sets) directly to LevelDB. It is inspired by the design principles of SSDB and its production adoption by industry pioneers like Zerodha.
+It is **not** a wrapper or client for the C++ SSDB database server; rather, it is a standalone, lightweight database library built from scratch in TypeScript by [Manoj Gowda](https://manojgowda.in) that brings Redis-like APIs (Strings, Hashes, Sorted Sets) directly to LevelDB. It is inspired by the design principles of SSDB and its production adoption by industry pioneers like Zerodha.
 
 ---
 
@@ -274,6 +274,7 @@ npx ssdiskdb server remove server-a --path ./my-custom-db
 
 ## 👥 References
 
+- **Manoj Gowda Portfolio**: [manojgowda.in](https://manojgowda.in)
 - **Google LevelDB**: [github.com/google/leveldb](https://github.com/google/leveldb)
 - **Official SSDB Database (Inspiration)**: [github.com/ideawu/ssdb](https://github.com/ideawu/ssdb)
 - **SSDiskDB Repository**: [github.com/ManojGowda89/ssdiskdb](https://github.com/ManojGowda89/ssdiskdb)
@@ -286,4 +287,4 @@ npx ssdiskdb server remove server-a --path ./my-custom-db
 
 ## 📜 License
 
-MIT
+Apache-2.0

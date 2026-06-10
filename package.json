@@ -38,7 +38,7 @@
     "json-serialization",
     "production-ready"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "dependencies": {
     "level": "^10.0.0"
   },
