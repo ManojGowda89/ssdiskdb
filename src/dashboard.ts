@@ -1,7 +1,7 @@
 import http from "http";
 import crypto from "crypto";
 import zlib from "zlib";
-import { SSDiskDBClient } from "./index";
+import { SSDiskDBClient, connect } from "./index";
 
 // Track client heartbeats globally/module level
 const activeHeartbeats = new Map<string, number>();
@@ -10,8 +10,22 @@ interface SessionData {
   username: string;
   userRole: string;
   expiresAt: number;
+  connectionUri?: string;
 }
 const sessions = new Map<string, SessionData>();
+const remoteClients = new Map<string, SSDiskDBClient>();
+
+async function getClientForSession(sessionData: SessionData, localClient: SSDiskDBClient): Promise<SSDiskDBClient> {
+  if (sessionData.connectionUri) {
+    let rClient = remoteClients.get(sessionData.connectionUri);
+    if (!rClient) {
+      rClient = await connect(sessionData.connectionUri);
+      remoteClients.set(sessionData.connectionUri, rClient);
+    }
+    return rClient;
+  }
+  return localClient;
+}
 
 function parseCookies(cookieHeader?: string): Record<string, string> {
   const list: Record<string, string> = {};
@@ -95,7 +109,7 @@ async function validateApiKey(client: SSDiskDBClient, ip: string, serverId?: str
 }
 
 // Function to generate the HTML for the dashboard
-function getDashboardHtml(username: string, role: string): string {
+function getDashboardHtml(username: string, role: string, mode: string = "local", remoteInfo?: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -502,7 +516,7 @@ function getDashboardHtml(username: string, role: string): string {
   <header>
     <div>
       <h1>SSDiskDB Insights</h1>
-      <p style="font-size: 0.875rem; color: var(--text-muted);">Local Embedded Cache Console</p>
+      <p style="font-size: 0.875rem; color: var(--text-muted);">${mode === 'remote' ? 'Remote Cache Client Console' : 'Local Embedded Cache Console'}</p>
     </div>
     <div class="user-info">
       <span>User: <strong>${username}</strong> (${role})</span>
@@ -517,7 +531,8 @@ function getDashboardHtml(username: string, role: string): string {
     </div>
     <div class="stat-card green">
       <div class="stat-title">Database Mode</div>
-      <div class="stat-value">LevelDB (Local)</div>
+      <div class="stat-value" id="db-mode-title">${mode === 'remote' ? 'Remote Cache' : 'LevelDB (Local)'}</div>
+      <div id="db-mode-subtitle" style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">${mode === 'remote' ? remoteInfo : 'Active Local Instance'}</div>
     </div>
     <div class="stat-card">
       <div class="stat-title">Server Status</div>
@@ -528,8 +543,8 @@ function getDashboardHtml(username: string, role: string): string {
   <div class="main-content">
     <div class="tabs-container">
       <button class="tab-btn active" id="tab-btn-keys" onclick="switchTab('keys')">Cache Keys</button>
-      <button class="tab-btn" id="tab-btn-servers" onclick="switchTab('servers')">Allowed Servers</button>
-      <button class="tab-btn" id="tab-btn-subaccounts" onclick="switchTab('subaccounts')" style="display: ${role === 'admin' ? 'block' : 'none'};">Sub-accounts</button>
+      <button class="tab-btn" id="tab-btn-servers" onclick="switchTab('servers')" style="display: ${mode === 'remote' ? 'none' : 'block'};">Allowed Servers</button>
+      <button class="tab-btn" id="tab-btn-subaccounts" onclick="switchTab('subaccounts')" style="display: ${(role === 'admin' && mode !== 'remote') ? 'block' : 'none'};">Sub-accounts</button>
       <button class="tab-btn" id="tab-btn-docs" onclick="switchTab('docs')">Documentation Docs</button>
     </div>
 
@@ -722,6 +737,23 @@ const { connect } = require("ssdiskdb");
             <li>🖥️ <strong style="color: white;">serverId:</strong> The exact whitelisted identifier registered in the <strong>Server IP / Hostname</strong> column under the <strong>Allowed Servers</strong> tab (e.g., <code>127.0.0.1</code>, <code>server-a</code>, or any label you whitelisted).</li>
           </ul>
         </div>
+      </div>
+
+      <!-- Card 2.5: Connection URI Mode -->
+      <div style="background-color: var(--bg-color); border: 1px solid var(--border-color); border-radius: 0.5rem; padding: 1.5rem; margin-bottom: 1.5rem;">
+        <h3 style="font-size: 1.1rem; font-weight: 600; color: #60a5fa; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.5rem;">
+          <span style="background-color: rgba(59, 130, 246, 0.15); padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.8rem; font-family: monospace;">URI Scheme</span>
+          Connection URI (Single String Configuration)
+        </h3>
+        <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1rem;">
+          You can connect using a single URI containing the API key, host, server ID, and optional encryption key.
+        </p>
+        <pre style="background-color: rgba(0, 0, 0, 0.3); padding: 1rem; border-radius: 0.375rem; border: 1px solid var(--border-color); font-family: monospace; font-size: 0.85rem; color: #34d399; overflow-x: auto; margin-bottom: 1rem;">
+// Remote connection (no encryption)
+const db = await connect("ssdiskdb://ssdb_c4dee067d4a23dd35da3270ddd5b2cc5@&lt;central-server-ip&gt;:8971/server-a");
+
+// Remote connection (with encryption)
+const db2 = await connect("ssdiskdb+encry://ssdb_c4dee067d4a23dd35da3270ddd5b2cc5@&lt;central-server-ip&gt;:8971/server-a?key=anfjsdnafnanfajidjf");</pre>
       </div>
 
       <!-- Card 3: CLI commands -->
@@ -1139,7 +1171,8 @@ await db.zdel("leaderboard", "player1");</pre>
           <td>
             <div style="display: flex; gap: 0.5rem; align-items: center;">
               <code style="background-color: var(--bg-color); padding: 0.2rem 0.4rem; border-radius: 0.25rem; border: 1px solid var(--border-color); font-size: 0.8rem; font-family: monospace;">\${escapeHtml(srv.apiKey)}</code>
-              \${userRole === 'admin' ? \`<button class="btn btn-secondary" style="padding: 0.1rem 0.3rem; font-size: 0.75rem;" onclick="copyToClipboard('\${srv.apiKey}')">Copy</button>\` : ''}
+              \${userRole === 'admin' ? \`<button class="btn btn-secondary" style="padding: 0.1rem 0.3rem; font-size: 0.75rem;" onclick="copyToClipboard('\${srv.apiKey}')">Copy Key</button>\` : ''}
+              \${userRole === 'admin' ? \`<button class="btn btn-secondary" style="padding: 0.1rem 0.3rem; font-size: 0.75rem;" onclick="copyConnectionUrl('\${srv.apiKey}', '\${srv.address}')">Copy URI</button>\` : ''}
             </div>
           </td>
           <td>\${escapeHtml(srv.lastHeartbeat)}</td>
@@ -1220,6 +1253,15 @@ await db.zdel("leaderboard", "player1");</pre>
         showToast('API Key copied to clipboard');
       }).catch(err => {
         showToast('Failed to copy API Key', true);
+      });
+    }
+
+    function copyConnectionUrl(apiKey, serverId) {
+      const url = 'ssdiskdb://' + apiKey + '@' + window.location.host + '/' + serverId;
+      navigator.clipboard.writeText(url).then(() => {
+        showToast('Connection URI copied to clipboard');
+      }).catch(err => {
+        showToast('Failed to copy Connection URI', true);
       });
     }
 
@@ -1951,6 +1993,33 @@ function getLoginHtml(): string {
       font-size: 0.8rem;
       color: rgba(255, 255, 255, 0.3);
     }
+
+    .tabs-container {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      padding-bottom: 0.5rem;
+    }
+
+    .tab-btn {
+      flex: 1;
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      padding: 0.5rem;
+      border-radius: 0.375rem;
+      transition: all 0.2s ease;
+      text-align: center;
+    }
+
+    .tab-btn.active {
+      color: white;
+      background-color: var(--accent-blue);
+    }
   </style>
 </head>
 <body>
@@ -1979,6 +2048,11 @@ function getLoginHtml(): string {
         <p class="subtitle">Enter credentials to manage your database</p>
       </div>
 
+      <div class="tabs-container">
+        <button type="button" class="tab-btn active" id="tab-btn-local" onclick="switchLoginTab('local')">Local Database</button>
+        <button type="button" class="tab-btn" id="tab-btn-remote" onclick="switchLoginTab('remote')">Remote Connection</button>
+      </div>
+
       <div class="error-box" id="error-box">
         <svg style="width: 1.25rem; height: 1.25rem; flex-shrink: 0;" viewBox="0 0 20 20" fill="currentColor">
           <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
@@ -1987,17 +2061,30 @@ function getLoginHtml(): string {
       </div>
 
       <form id="login-form" onsubmit="handleLogin(event)">
-        <div class="form-group">
-          <label class="form-label" for="username">Username</label>
-          <div class="input-wrapper">
-            <input class="form-input" type="text" id="username" required autocomplete="username" placeholder="e.g. admin">
+        <!-- Local Fields -->
+        <div id="local-fields">
+          <div class="form-group">
+            <label class="form-label" for="username">Username</label>
+            <div class="input-wrapper">
+              <input class="form-input" type="text" id="username" required autocomplete="username" placeholder="e.g. admin">
+            </div>
+          </div>
+
+          <div class="form-group" style="margin-bottom: 2rem;">
+            <label class="form-label" for="password">Password</label>
+            <div class="input-wrapper">
+              <input class="form-input" type="password" id="password" required autocomplete="current-password" placeholder="••••••••">
+            </div>
           </div>
         </div>
 
-        <div class="form-group" style="margin-bottom: 2rem;">
-          <label class="form-label" for="password">Password</label>
-          <div class="input-wrapper">
-            <input class="form-input" type="password" id="password" required autocomplete="current-password" placeholder="••••••••">
+        <!-- Remote Fields -->
+        <div id="remote-fields" style="display: none;">
+          <div class="form-group" style="margin-bottom: 2rem;">
+            <label class="form-label" for="connection-uri">Connection URI</label>
+            <div class="input-wrapper">
+              <input class="form-input" type="text" id="connection-uri" placeholder="ssdiskdb://apiKey@host:port/serverId">
+            </div>
           </div>
         </div>
 
@@ -2012,20 +2099,60 @@ function getLoginHtml(): string {
   </div>
 
   <script>
+    let loginMode = 'local';
+
+    function switchLoginTab(mode) {
+      loginMode = mode;
+      const btnLocal = document.getElementById('tab-btn-local');
+      const btnRemote = document.getElementById('tab-btn-remote');
+      const localFields = document.getElementById('local-fields');
+      const remoteFields = document.getElementById('remote-fields');
+      const errorBox = document.getElementById('error-box');
+
+      errorBox.style.display = 'none';
+
+      if (mode === 'local') {
+        btnLocal.classList.add('active');
+        btnRemote.classList.remove('active');
+        localFields.style.display = 'block';
+        remoteFields.style.display = 'none';
+        document.getElementById('username').required = true;
+        document.getElementById('password').required = true;
+        document.getElementById('connection-uri').required = false;
+      } else {
+        btnLocal.classList.remove('active');
+        btnRemote.classList.add('active');
+        localFields.style.display = 'none';
+        remoteFields.style.display = 'block';
+        document.getElementById('username').required = false;
+        document.getElementById('password').required = false;
+        document.getElementById('connection-uri').required = true;
+      }
+    }
+
     async function handleLogin(event) {
       event.preventDefault();
       const userEl = document.getElementById('username');
       const passEl = document.getElementById('password');
+      const uriEl = document.getElementById('connection-uri');
       const submitBtn = document.getElementById('btn-submit');
       const errorBox = document.getElementById('error-box');
       const errorMsg = document.getElementById('error-message');
 
-      const username = userEl.value.trim();
-      const password = passEl.value;
-
-      if (!username || !password) return;
-
       errorBox.style.display = 'none';
+
+      const payload = { type: loginMode };
+      if (loginMode === 'local') {
+        const username = userEl.value.trim();
+        const password = passEl.value;
+        if (!username || !password) return;
+        payload.username = username;
+        payload.password = password;
+      } else {
+        const connectionUri = uriEl.value.trim();
+        if (!connectionUri) return;
+        payload.connectionUri = connectionUri;
+      }
 
       submitBtn.disabled = true;
       const originalText = submitBtn.innerHTML;
@@ -2035,7 +2162,7 @@ function getLoginHtml(): string {
         const response = await fetch('/api/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, password })
+          body: JSON.stringify(payload)
         });
 
         if (response.ok) {
@@ -2180,48 +2307,56 @@ export function startDashboardServer(
       let reqUsername = "";
 
       if (!isClientApi) {
-        // 1. Extract and check session cookie
-        const cookies = parseCookies(req.headers.cookie);
-        const sessionToken = cookies.session;
-        if (sessionToken && sessions.has(sessionToken)) {
-          const sessionData = sessions.get(sessionToken)!;
-          if (Date.now() < sessionData.expiresAt) {
-            authenticated = true;
-            userRole = sessionData.userRole;
-            reqUsername = sessionData.username;
-          } else {
-            sessions.delete(sessionToken);
-          }
-        }
-
-        // 2. Fallback: Check Basic Auth proactively (helpful for programmatic scripts / retrocompatibility)
-        if (!authenticated && req.headers.authorization && req.headers.authorization.startsWith("Basic ")) {
-          try {
-            const token = req.headers.authorization.substring(6);
-            const decoded = Buffer.from(token, "base64").toString("utf8");
-            const parts = decoded.split(":");
-            const basicUser = parts[0];
-            const basicPass = parts[1] || "";
-            const storedCreds = await getCredentials();
-            const inputHash = crypto.createHash("sha256").update(basicPass).digest("hex");
-
-            if (basicUser === storedCreds.username && inputHash === storedCreds.passwordHash) {
+        // If it's a dedicated remote client console, auto-authenticate
+        const isDedicatedRemote = (client as any).remoteUrl !== undefined;
+        if (isDedicatedRemote) {
+          authenticated = true;
+          userRole = "admin";
+          reqUsername = "admin";
+        } else {
+          // 1. Extract and check session cookie
+          const cookies = parseCookies(req.headers.cookie);
+          const sessionToken = cookies.session;
+          if (sessionToken && sessions.has(sessionToken)) {
+            const sessionData = sessions.get(sessionToken)!;
+            if (Date.now() < sessionData.expiresAt) {
               authenticated = true;
-              userRole = "admin";
-              reqUsername = basicUser;
+              userRole = sessionData.userRole;
+              reqUsername = sessionData.username;
             } else {
-              const db = (client as any).db;
-              const subRaw = await db.get("config:subaccount:" + basicUser);
-              if (subRaw) {
-                const subData = JSON.parse(subRaw);
-                if (inputHash === subData.passwordHash) {
-                  authenticated = true;
-                  userRole = subData.role || "junior";
-                  reqUsername = basicUser;
+              sessions.delete(sessionToken);
+            }
+          }
+
+          // 2. Fallback: Check Basic Auth proactively (helpful for programmatic scripts / retrocompatibility)
+          if (!authenticated && req.headers.authorization && req.headers.authorization.startsWith("Basic ")) {
+            try {
+              const token = req.headers.authorization.substring(6);
+              const decoded = Buffer.from(token, "base64").toString("utf8");
+              const parts = decoded.split(":");
+              const basicUser = parts[0];
+              const basicPass = parts[1] || "";
+              const storedCreds = await getCredentials();
+              const inputHash = crypto.createHash("sha256").update(basicPass).digest("hex");
+
+              if (basicUser === storedCreds.username && inputHash === storedCreds.passwordHash) {
+                authenticated = true;
+                userRole = "admin";
+                reqUsername = basicUser;
+              } else {
+                const db = (client as any).db;
+                const subRaw = await db.get("config:subaccount:" + basicUser);
+                if (subRaw) {
+                  const subData = JSON.parse(subRaw);
+                  if (inputHash === subData.passwordHash) {
+                    authenticated = true;
+                    userRole = subData.role || "junior";
+                    reqUsername = basicUser;
+                  }
                 }
               }
-            }
-          } catch (e) {}
+            } catch (e) {}
+          }
         }
 
         // Handle unauthenticated requests
@@ -2250,8 +2385,29 @@ export function startDashboardServer(
 
       // Serve UI
       if (url === "/" || url === "/index.html") {
+        const isDedicatedRemote = (client as any).remoteUrl !== undefined;
+        if (isDedicatedRemote) {
+          res.writeHead(200, { "Content-Type": "text/html" });
+          res.end(getDashboardHtml("admin", "admin", "remote", `${(client as any).serverId} @ ${(client as any).remoteUrl}`));
+          return;
+        }
+
+        // If it's a session-based remote connection
+        const cookies = parseCookies(req.headers.cookie);
+        const sessionData = cookies.session ? sessions.get(cookies.session) : null;
+        if (sessionData && sessionData.connectionUri) {
+          let remoteDisplay = sessionData.connectionUri;
+          try {
+            const parsedUri = new URL(sessionData.connectionUri);
+            remoteDisplay = `${parsedUri.pathname.substring(1)} @ ${parsedUri.host}`;
+          } catch(e){}
+          res.writeHead(200, { "Content-Type": "text/html" });
+          res.end(getDashboardHtml(sessionData.username, "admin", "remote", remoteDisplay));
+          return;
+        }
+
         res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(getDashboardHtml((req as any).username, (req as any).userRole));
+        res.end(getDashboardHtml((req as any).username, (req as any).userRole, "local"));
         return;
       }
 
@@ -2262,6 +2418,47 @@ export function startDashboardServer(
         req.on("end", async () => {
           try {
             const payload = JSON.parse(body);
+            const loginType = payload.type || "local";
+
+            if (loginType === "remote") {
+              const connectionUri = payload.connectionUri;
+              if (!connectionUri) {
+                res.writeHead(400, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ error: "Connection URI is required" }));
+                return;
+              }
+              // Verify connection
+              try {
+                const testClient = await connect(connectionUri);
+                await testClient.close();
+              } catch (err: any) {
+                res.writeHead(400, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ error: `Connection failed: ${err.message}` }));
+                return;
+              }
+
+              // Extract serverId/host for display user
+              let displayUser = "remote-server";
+              try {
+                const parsedUri = new URL(connectionUri);
+                displayUser = parsedUri.pathname.substring(1) || "remote-server";
+              } catch(e){}
+
+              const sessionId = crypto.randomBytes(32).toString("hex");
+              sessions.set(sessionId, {
+                username: displayUser,
+                userRole: "admin",
+                expiresAt: Date.now() + 24 * 60 * 60 * 1000, // 24 hours
+                connectionUri: connectionUri
+              });
+              res.writeHead(200, {
+                "Set-Cookie": `session=${sessionId}; HttpOnly; Path=/; SameSite=Strict; Max-Age=86400`,
+                "Content-Type": "application/json"
+              });
+              res.end(JSON.stringify({ status: "ok", role: "admin", username: displayUser }));
+              return;
+            }
+
             const loginUsername = payload.username;
             const loginPassword = payload.password;
             if (!loginUsername || !loginPassword) {
@@ -2323,6 +2520,14 @@ export function startDashboardServer(
         const cookies = parseCookies(req.headers.cookie);
         const token = cookies.session;
         if (token) {
+          const sessionData = sessions.get(token);
+          if (sessionData && sessionData.connectionUri) {
+            const rClient = remoteClients.get(sessionData.connectionUri);
+            if (rClient) {
+              rClient.close().catch(() => {});
+              remoteClients.delete(sessionData.connectionUri);
+            }
+          }
           sessions.delete(token);
         }
         if (method === "GET") {
@@ -2344,13 +2549,23 @@ export function startDashboardServer(
       // API: Get all keys
       if (url === "/api/keys" && method === "GET") {
         try {
-          if (typeof (client as any).getAllKeys === "function") {
-            const list = await (client as any).getAllKeys();
+          const cookies = parseCookies(req.headers.cookie);
+          const sessionData = sessions.get(cookies.session);
+          let currentClient: SSDiskDBClient = client;
+          if (sessionData && sessionData.connectionUri) {
+            currentClient = await getClientForSession(sessionData, client);
+          }
+
+          if (typeof (currentClient as any).getAllKeys === "function") {
+            const list = await (currentClient as any).getAllKeys();
             const parsedList = list.map((item: any) => {
               const parsed = parseKey(item.key);
+              const displayServer = (currentClient as any).serverId && (currentClient as any).serverId !== "Local"
+                ? (currentClient as any).serverId
+                : parsed.server;
               return {
                 type: parsed.type,
-                server: parsed.server,
+                server: displayServer,
                 key: parsed.key,
                 name: parsed.name || "",
                 fullName: parsed.name ? `${parsed.name}:${parsed.key}` : parsed.key,
@@ -2476,9 +2691,13 @@ export function startDashboardServer(
                   })
                   .map(item => {
                     let cleanKey = item.key;
-                    if (item.key.startsWith(`s:client:${serverId}:`)) cleanKey = item.key.substring(`s:client:${serverId}:`.length);
-                    if (item.key.startsWith(`h:client:${serverId}:`)) cleanKey = item.key.substring(`h:client:${serverId}:`.length);
-                    if (item.key.startsWith(`z:client:${serverId}:`)) cleanKey = item.key.substring(`z:client:${serverId}:`.length);
+                    if (item.key.startsWith(`s:client:${serverId}:`)) {
+                      cleanKey = "s:" + item.key.substring(`s:client:${serverId}:`.length);
+                    } else if (item.key.startsWith(`h:client:${serverId}:`)) {
+                      cleanKey = "h:" + item.key.substring(`h:client:${serverId}:`.length);
+                    } else if (item.key.startsWith(`z:client:${serverId}:`)) {
+                      cleanKey = "z:" + item.key.substring(`z:client:${serverId}:`.length);
+                    }
                     return { key: cleanKey, value: item.value };
                   });
                 res.writeHead(200, { "Content-Type": "application/json" });
@@ -2501,6 +2720,17 @@ export function startDashboardServer(
           }
         });
         return;
+      }
+
+      // Block remote session connections from accessing or modifying local server configs / sub-accounts
+      if (url.startsWith("/api/servers") || url.startsWith("/api/subaccounts")) {
+        const cookies = parseCookies(req.headers.cookie);
+        const sessionData = cookies.session ? sessions.get(cookies.session) : null;
+        if (sessionData && sessionData.connectionUri) {
+          res.writeHead(403, { "Content-Type": "text/plain" });
+          res.end("Forbidden: Action not supported on remote server connections");
+          return;
+        }
       }
 
       // API: Get Allowed Servers List
@@ -2794,13 +3024,20 @@ export function startDashboardServer(
         req.on("data", chunk => { body += chunk; });
         req.on("end", async () => {
           try {
+            const cookies = parseCookies(req.headers.cookie);
+            const sessionData = cookies.session ? sessions.get(cookies.session) : null;
+            let currentClient = client;
+            if (sessionData && sessionData.connectionUri) {
+              currentClient = await getClientForSession(sessionData, client);
+            }
+
             const payload = JSON.parse(body);
             if (payload.type === "string") {
-              await client.set(payload.key, payload.value);
+              await currentClient.set(payload.key, payload.value);
             } else if (payload.type === "hash") {
-              await client.hset(payload.name, payload.key, payload.value);
+              await currentClient.hset(payload.name, payload.key, payload.value);
             } else if (payload.type === "zset") {
-              await client.zset(payload.name, payload.key, payload.score);
+              await currentClient.zset(payload.name, payload.key, payload.score);
             } else {
               res.writeHead(400, { "Content-Type": "text/plain" });
               res.end("Invalid type");
@@ -2827,20 +3064,27 @@ export function startDashboardServer(
         req.on("data", chunk => { body += chunk; });
         req.on("end", async () => {
           try {
+            const cookies = parseCookies(req.headers.cookie);
+            const sessionData = cookies.session ? sessions.get(cookies.session) : null;
+            let currentClient = client;
+            if (sessionData && sessionData.connectionUri) {
+              currentClient = await getClientForSession(sessionData, client);
+            }
+
             const payload = JSON.parse(body);
             const prefixedKey = payload.key as string; // e.g. "s:mykey" or "h:myhash:field"
             if (prefixedKey.startsWith("s:")) {
-              await client.del(prefixedKey.substring(2));
+              await currentClient.del(prefixedKey.substring(2));
             } else if (prefixedKey.startsWith("h:")) {
               const parts = prefixedKey.substring(2).split(":");
               const name = parts[0];
               const key = parts.slice(1).join(":");
-              await client.hdel(name, key);
+              await currentClient.hdel(name, key);
             } else if (prefixedKey.startsWith("z:")) {
               const parts = prefixedKey.substring(2).split(":");
               const name = parts[0];
               const key = parts.slice(1).join(":");
-              await client.zdel(name, key);
+              await currentClient.zdel(name, key);
             } else {
               res.writeHead(400, { "Content-Type": "text/plain" });
               res.end("Invalid key prefix");
@@ -2864,8 +3108,15 @@ export function startDashboardServer(
           return;
         }
         try {
-          if (typeof (client as any).flush === "function") {
-            await (client as any).flush();
+          const cookies = parseCookies(req.headers.cookie);
+          const sessionData = cookies.session ? sessions.get(cookies.session) : null;
+          let currentClient = client;
+          if (sessionData && sessionData.connectionUri) {
+            currentClient = await getClientForSession(sessionData, client);
+          }
+
+          if (typeof (currentClient as any).flush === "function") {
+            await (currentClient as any).flush();
             res.writeHead(200, { "Content-Type": "text/plain" });
             res.end("OK");
           } else {

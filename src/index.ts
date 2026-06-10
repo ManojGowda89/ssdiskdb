@@ -104,9 +104,14 @@ class LocalSSDBClient implements SSDiskDBClient {
   }
 
   async set(key: string, value: any): Promise<any> {
-    let serialized = serialize(value);
-    if (this.encryptionKey) {
-      serialized = encrypt(serialized, this.encryptionKey);
+    let serialized: string;
+    if (typeof value === "string" && /^[0-9a-fA-F]{32}:[0-9a-fA-F]+$/.test(value)) {
+      serialized = value;
+    } else {
+      serialized = serialize(value);
+      if (this.encryptionKey) {
+        serialized = encrypt(serialized, this.encryptionKey);
+      }
     }
     await this.db.put(this.getFullKey("s", key), serialized);
     return 1;
@@ -154,9 +159,14 @@ class LocalSSDBClient implements SSDiskDBClient {
   }
 
   async hset(name: string, key: string, value: any): Promise<any> {
-    let serialized = serialize(value);
-    if (this.encryptionKey) {
-      serialized = encrypt(serialized, this.encryptionKey);
+    let serialized: string;
+    if (typeof value === "string" && /^[0-9a-fA-F]{32}:[0-9a-fA-F]+$/.test(value)) {
+      serialized = value;
+    } else {
+      serialized = serialize(value);
+      if (this.encryptionKey) {
+        serialized = encrypt(serialized, this.encryptionKey);
+      }
     }
     await this.db.put(this.getFullKey("h", name, key), serialized);
     return 1;
@@ -257,15 +267,18 @@ class LocalSSDBClient implements SSDiskDBClient {
 }
 
 class RemoteSSDiskDBClient implements SSDiskDBClient {
-  private remoteUrl: string;
-  private apiKey: string;
-  private serverId: string;
+  public remoteUrl: string;
+  public apiKey: string;
+  public serverId: string;
+  private encryptionKey?: string;
   private heartbeatInterval?: NodeJS.Timeout;
+  private dashboardServer?: DashboardServer;
 
-  constructor(remoteUrl: string, apiKey: string, serverId: string) {
+  constructor(remoteUrl: string, apiKey: string, serverId: string, encryptionKey?: string) {
     this.remoteUrl = remoteUrl.replace(/\/$/, "");
     this.apiKey = apiKey;
     this.serverId = serverId;
+    this.encryptionKey = encryptionKey;
   }
 
   async handshake(): Promise<void> {
@@ -348,11 +361,21 @@ class RemoteSSDiskDBClient implements SSDiskDBClient {
   }
 
   async set(key: string, value: any): Promise<any> {
+    if (this.encryptionKey) {
+      let serialized = serialize(value);
+      serialized = encrypt(serialized, this.encryptionKey);
+      return this.request("set", [key, serialized]);
+    }
     return this.request("set", [key, value]);
   }
 
   async get(key: string): Promise<any> {
-    return this.request("get", [key]);
+    let res = await this.request("get", [key]);
+    if (this.encryptionKey && res !== undefined && res !== null) {
+      res = decrypt(res, this.encryptionKey);
+      res = deserialize(res);
+    }
+    return res;
   }
 
   async del(key: string): Promise<any> {
@@ -364,15 +387,31 @@ class RemoteSSDiskDBClient implements SSDiskDBClient {
   }
 
   async incr(key: string, num: number = 1): Promise<number> {
+    if (this.encryptionKey) {
+      const val = await this.get(key);
+      const newVal = (Number(val) || 0) + num;
+      await this.set(key, newVal);
+      return newVal;
+    }
     return this.request("incr", [key, num]);
   }
 
   async hset(name: string, key: string, value: any): Promise<any> {
+    if (this.encryptionKey) {
+      let serialized = serialize(value);
+      serialized = encrypt(serialized, this.encryptionKey);
+      return this.request("hset", [name, key, serialized]);
+    }
     return this.request("hset", [name, key, value]);
   }
 
   async hget(name: string, key: string): Promise<any> {
-    return this.request("hget", [name, key]);
+    let res = await this.request("hget", [name, key]);
+    if (this.encryptionKey && res !== undefined && res !== null) {
+      res = decrypt(res, this.encryptionKey);
+      res = deserialize(res);
+    }
+    return res;
   }
 
   async hdel(name: string, key: string): Promise<any> {
@@ -396,14 +435,33 @@ class RemoteSSDiskDBClient implements SSDiskDBClient {
       clearInterval(this.heartbeatInterval);
       this.heartbeatInterval = undefined;
     }
+    if (this.dashboardServer) {
+      await this.dashboardServer.close();
+      this.dashboardServer = undefined;
+    }
   }
 
-  async startDashboard(port?: number): Promise<void> {
-    throw new Error("Method not supported on remote client connection");
+  async startDashboard(port: number = 8971): Promise<void> {
+    if (this.dashboardServer) {
+      return;
+    }
+    this.dashboardServer = await startDashboardServer(this, port, async () => {
+      return { username: "admin", passwordHash: "" };
+    });
   }
 
   async getAllKeys(): Promise<{ key: string; value: any }[]> {
-    return this.request("getAllKeys", []);
+    const list = await this.request("getAllKeys", []);
+    return list.map((item: any) => {
+      let parsedVal = item.value;
+      if (this.encryptionKey && typeof parsedVal === "string") {
+        try {
+          parsedVal = decrypt(parsedVal, this.encryptionKey);
+          parsedVal = deserialize(parsedVal);
+        } catch (e) {}
+      }
+      return { key: item.key, value: parsedVal };
+    });
   }
 
   async flush(): Promise<void> {
@@ -416,6 +474,33 @@ class RemoteSSDiskDBClient implements SSDiskDBClient {
 
   async getCredentials(): Promise<{ username: string; passwordHash: string }> {
     throw new Error("Method not supported on remote client connection");
+  }
+}
+
+export function parseConnectionString(uri: string): ConnectOptions {
+  try {
+    const match = uri.match(/^ssdiskdb(\+encry)?:\/\/([^@]+)@([^/]+)\/([^?#]+)(?:\?key=([^#]+))?$/);
+    if (!match) {
+      throw new Error("Invalid connection URI format");
+    }
+    const isEncrypted = !!match[1];
+    const apiKey = match[2];
+    const host = match[3];
+    const serverId = match[4];
+    const encryptionKey = match[5];
+    
+    if (isEncrypted && !encryptionKey) {
+      throw new Error("Encryption key is required for ssdiskdb+encry:// protocol");
+    }
+
+    return {
+      remoteUrl: `http://${host}`,
+      apiKey,
+      serverId,
+      encryptionKey: encryptionKey || undefined
+    };
+  } catch (e: any) {
+    throw new Error(`Failed to parse connection URI: ${e.message}`);
   }
 }
 
@@ -432,31 +517,54 @@ export async function connect(
   let serverId = "Local";
 
   if (typeof pathOrOptions === "string") {
-    storagePath = pathOrOptions;
+    if (pathOrOptions.startsWith("ssdiskdb://") || pathOrOptions.startsWith("ssdiskdb+encry://")) {
+      const parsed = parseConnectionString(pathOrOptions);
+      remoteUrl = parsed.remoteUrl;
+      apiKey = parsed.apiKey;
+      serverId = parsed.serverId || "Local";
+      encryptionKey = parsed.encryptionKey;
+    } else {
+      storagePath = pathOrOptions;
+    }
     if (options) {
-      if (options.encryptionKey) encryptionKey = options.encryptionKey;
-      if (options.startDashboard) startDashboard = options.startDashboard;
-      if (options.dashboardPort) dashboardPort = options.dashboardPort;
-      if (options.remoteUrl) remoteUrl = options.remoteUrl;
-      if (options.apiKey) apiKey = options.apiKey;
-      if (options.serverId) serverId = options.serverId;
+      if (options.encryptionKey !== undefined) encryptionKey = options.encryptionKey;
+      if (options.startDashboard !== undefined) startDashboard = options.startDashboard;
+      if (options.dashboardPort !== undefined) dashboardPort = options.dashboardPort;
+      if (options.remoteUrl !== undefined) remoteUrl = options.remoteUrl;
+      if (options.apiKey !== undefined) apiKey = options.apiKey;
+      if (options.serverId !== undefined) serverId = options.serverId;
     }
   } else if (pathOrOptions && typeof pathOrOptions === "object") {
-    if (pathOrOptions.storagePath) storagePath = pathOrOptions.storagePath;
-    if (pathOrOptions.encryptionKey) encryptionKey = pathOrOptions.encryptionKey;
-    if (pathOrOptions.startDashboard) startDashboard = pathOrOptions.startDashboard;
-    if (pathOrOptions.dashboardPort) dashboardPort = pathOrOptions.dashboardPort;
-    if (pathOrOptions.remoteUrl) remoteUrl = pathOrOptions.remoteUrl;
-    if (pathOrOptions.apiKey) apiKey = pathOrOptions.apiKey;
-    if (pathOrOptions.serverId) serverId = pathOrOptions.serverId;
+    let uriParsed: ConnectOptions | undefined;
+    if (pathOrOptions.storagePath && (pathOrOptions.storagePath.startsWith("ssdiskdb://") || pathOrOptions.storagePath.startsWith("ssdiskdb+encry://"))) {
+      uriParsed = parseConnectionString(pathOrOptions.storagePath);
+    }
+    
+    if (uriParsed) {
+      remoteUrl = uriParsed.remoteUrl;
+      apiKey = uriParsed.apiKey;
+      serverId = uriParsed.serverId || "Local";
+      encryptionKey = uriParsed.encryptionKey;
+    } else {
+      if (pathOrOptions.storagePath) storagePath = pathOrOptions.storagePath;
+    }
+    if (pathOrOptions.encryptionKey !== undefined) encryptionKey = pathOrOptions.encryptionKey;
+    if (pathOrOptions.startDashboard !== undefined) startDashboard = pathOrOptions.startDashboard;
+    if (pathOrOptions.dashboardPort !== undefined) dashboardPort = pathOrOptions.dashboardPort;
+    if (pathOrOptions.remoteUrl !== undefined) remoteUrl = pathOrOptions.remoteUrl;
+    if (pathOrOptions.apiKey !== undefined) apiKey = pathOrOptions.apiKey;
+    if (pathOrOptions.serverId !== undefined) serverId = pathOrOptions.serverId;
   }
 
   if (remoteUrl) {
     if (!apiKey) {
       throw new Error("apiKey is required for remote connections");
     }
-    const client = new RemoteSSDiskDBClient(remoteUrl, apiKey, serverId);
+    const client = new RemoteSSDiskDBClient(remoteUrl, apiKey, serverId, encryptionKey);
     await client.handshake();
+    if (startDashboard) {
+      await client.startDashboard(dashboardPort);
+    }
     return client;
   }
 

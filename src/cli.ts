@@ -85,24 +85,29 @@ async function main() {
   const dbPath = getFlagValue("--path") || "./ssdb-local-db";
 
   if (command === "start") {
-    const remoteUrl = getFlagValue("--remote") || getFlagValue("--remoteUrl");
-    const apiKey = getFlagValue("--apiKey") || getFlagValue("--api-key");
-    const serverId = getFlagValue("--serverId") || getFlagValue("--server-id");
+    let connectionUri = getFlagValue("--uri");
+    if (!connectionUri) {
+      const positional = args.find(a => a.startsWith("ssdiskdb://") || a.startsWith("ssdiskdb+encry://"));
+      if (positional) {
+        connectionUri = positional;
+      }
+    }
 
-    if (remoteUrl) {
-      if (!apiKey || !serverId) {
-        console.error("Error: Both --apiKey and --serverId are required for remote client connection.");
+    if (connectionUri) {
+      const portStr = getFlagValue("--port") || "8971";
+      const port = parseInt(portStr, 10);
+      if (isNaN(port)) {
+        console.error("Error: Invalid port specified");
         process.exit(1);
       }
-      console.log(`Connecting to remote SSDiskDB server at ${remoteUrl}...`);
+      console.log(`Connecting to remote SSDiskDB server via URI: ${connectionUri}...`);
       try {
-        const client = await connect({
-          remoteUrl,
-          apiKey,
-          serverId
+        const client = await connect(connectionUri, {
+          startDashboard: true,
+          dashboardPort: port
         });
         console.log(`Connected successfully in remote client mode.`);
-        console.log(`Server ID: ${serverId}`);
+        console.log(`Dashboard is running at: http://localhost:${port} (dedicated remote console)`);
         console.log(`Press Ctrl+C to disconnect...`);
 
         // Keep process alive
@@ -116,37 +121,69 @@ async function main() {
         process.exit(1);
       }
     } else {
-      const portStr = getFlagValue("--port") || "8971";
-      const port = parseInt(portStr, 10);
-      if (isNaN(port)) {
-        console.error("Error: Invalid port specified");
-        process.exit(1);
-      }
+      const remoteUrl = getFlagValue("--remote") || getFlagValue("--remoteUrl");
+      const apiKey = getFlagValue("--apiKey") || getFlagValue("--api-key");
+      const serverId = getFlagValue("--serverId") || getFlagValue("--server-id");
 
-      console.log(`Initializing SSDiskDB in local mode...`);
-      console.log(`Database directory: ${dbPath}`);
+      if (remoteUrl) {
+        if (!apiKey || !serverId) {
+          console.error("Error: Both --apiKey and --serverId are required for remote client connection.");
+          process.exit(1);
+        }
+        console.log(`Connecting to remote SSDiskDB server at ${remoteUrl}...`);
+        try {
+          const client = await connect({
+            remoteUrl,
+            apiKey,
+            serverId
+          });
+          console.log(`Connected successfully in remote client mode.`);
+          console.log(`Server ID: ${serverId}`);
+          console.log(`Press Ctrl+C to disconnect...`);
 
-      try {
-        const client = await connect({
-          storagePath: dbPath,
-          startDashboard: true,
-          dashboardPort: port
-        });
+          // Keep process alive
+          process.on("SIGINT", async () => {
+            console.log("\nDisconnecting...");
+            await client.close();
+            process.exit(0);
+          });
+        } catch (err: any) {
+          console.error("Failed to connect to remote server:", err.message);
+          process.exit(1);
+        }
+      } else {
+        const portStr = getFlagValue("--port") || "8971";
+        const port = parseInt(portStr, 10);
+        if (isNaN(port)) {
+          console.error("Error: Invalid port specified");
+          process.exit(1);
+        }
 
-        console.log(`SSDiskDB Local Engine started successfully.`);
-        console.log(`Dashboard is running at: http://localhost:${port}`);
-        console.log(`Default credentials: manoj / manoj (Use credentials command to change)`);
-        console.log(`Press Ctrl+C to terminate...`);
+        console.log(`Initializing SSDiskDB in local mode...`);
+        console.log(`Database directory: ${dbPath}`);
 
-        // Keep process alive
-        process.on("SIGINT", async () => {
-          console.log("\nStopping server...");
-          await client.close();
-          process.exit(0);
-        });
-      } catch (err: any) {
-        console.error("Failed to start server:", err.message);
-        process.exit(1);
+        try {
+          const client = await connect({
+            storagePath: dbPath,
+            startDashboard: true,
+            dashboardPort: port
+          });
+
+          console.log(`SSDiskDB Local Engine started successfully.`);
+          console.log(`Dashboard is running at: http://localhost:${port}`);
+          console.log(`Default credentials: manoj / manoj (Use credentials command to change)`);
+          console.log(`Press Ctrl+C to terminate...`);
+
+          // Keep process alive
+          process.on("SIGINT", async () => {
+            console.log("\nStopping server...");
+            await client.close();
+            process.exit(0);
+          });
+        } catch (err: any) {
+          console.error("Failed to start server:", err.message);
+          process.exit(1);
+        }
       }
     }
   } else if (command === "credentials") {

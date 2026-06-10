@@ -133,6 +133,20 @@ const db = await connect({
 - **apiKey**: The whitelisted server's API Key. Find this in the dashboard under the **Allowed Servers** tab (in the **API Key** column) or by running the CLI command `npx ssdiskdb server list`.
 - **serverId**: The whitelisted server identifier. This **must exactly match** the whitelisted value in the dashboard's **Server IP / Hostname** column (e.g., `server-a` or `10.0.0.5`).
 
+### 3. Connection URIs (Single String Config & Client-Side Encryption)
+For simplified configuration, you can connect using a single URI containing the credentials, host, and server ID.
+
+**Standard (Plaintext) URI:**
+```js
+const db = await connect("ssdiskdb://ssdb_c4dee067d4a23dd35da3270ddd5b2cc5@<central-server-ip>:8971/server-a");
+```
+
+**Encrypted URI (with Client-Side AES-256-CBC Encryption):**
+Secure data transparently *before* it leaves your client server. Only the client has the encryption key; the central server only sees and stores ciphertext, providing full data privacy.
+```js
+const db = await connect("ssdiskdb+encry://ssdb_c4dee067d4a23dd35da3270ddd5b2cc5@<central-server-ip>:8971/server-a?key=your-secret-aes-key");
+```
+
 > [!IMPORTANT]
 > **Startup Handshake**: During `connect()`, a remote client performs an immediate validation handshake with the central server. If the API Key is invalid, the server is blocked/restricted, or the endpoint is unreachable, `connect()` fails early throwing a descriptive error.
 > 
@@ -149,6 +163,11 @@ const db = await connect({
 
 SSDiskDB comes equipped with a built-in web console similar to Redis Insights. It operates on port `8971` by default and allows you to view database statistics, search keys, add/edit cache entries, delete records, clear the database, and manage allowed client connections.
 
+### Dual-Mode Dashboard UI (Local & Remote Proxying)
+The dashboard features a premium glassmorphic dual-mode login console:
+- **Local Database Mode**: Login with your admin or sub-account credentials to manage the local embedded LevelDB engine.
+- **Remote Connection Mode**: Login using a connection URI (`ssdiskdb://...` or `ssdiskdb+encry://...`). When connected in Remote Mode, the dashboard serves as a secure reverse-proxy console. All keys, metrics, and CRUD operations are dynamically forwarded to the central server, while restricting access to local-only admin configurations (like allowed servers or sub-accounts).
+
 ### 1. Launch via CLI (npx)
 
 You can launch the database and dashboard, or connect as a remote client directly from your terminal using `npx`:
@@ -160,8 +179,14 @@ npx ssdiskdb start
 # Start on a custom port and database directory
 npx ssdiskdb start --port 9000 --path ./my-custom-db
 
-# Connect as a remote client to a central SSDiskDB server
+# Connect as a remote client to a central SSDiskDB server using parameters
 npx ssdiskdb start --remote http://<central-server-ip>:8971 --apiKey <your-api-key> --serverId <your-server-id>
+
+# Connect as a remote client using a connection URI (positional)
+npx ssdiskdb start ssdiskdb://ssdb_c4dee067d4a23dd35da3270ddd5b2cc5@<central-server-ip>:8971/server-a
+
+# Connect as a remote client using a connection URI (option)
+npx ssdiskdb start --uri ssdiskdb://ssdb_c4dee067d4a23dd35da3270ddd5b2cc5@<central-server-ip>:8971/server-a
 ```
 
 ### 2. Configure Admin Credentials
@@ -194,7 +219,8 @@ npx ssdiskdb server remove 10.0.0.5 --path ./my-custom-db
 #### B. Manage via Web Dashboard:
 In the web dashboard under the **Allowed Servers** tab, you can manage remote access in real-time:
 - **Add Connections**: Input client IP/domain/ID to whitelist, and optionally enter a pre-defined **API Key**. If left blank, a secure API key is automatically generated.
-- **See & Copy Keys**: View and click to copy the active API keys.
+- **See & Copy Keys**: Click **Copy Key** to copy the active server's API key.
+- **Copy Connection URIs**: Click **Copy URI** to instantly copy a complete `ssdiskdb://` connection URI containing the dynamic server host, API Key, and server ID to configure your clients.
 - **Restrict/Block Access**: Click the **Block** button to temporarily restrict client access. When blocked, the client immediately receives `403 Forbidden` on all heartbeats and cache operations. Click **Allow Access** to restore connection.
 - **Reissue Key**: Click **Reissue Key** to regenerate a fresh API key. The old key is instantly invalidated, preventing unauthorized access.
 

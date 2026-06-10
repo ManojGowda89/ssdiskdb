@@ -512,5 +512,172 @@ test("SSDiskDB Local Mode Integration Tests", async (t) => {
     await client.close();
     fs.rmSync(testDbPath, { recursive: true, force: true });
   });
+
+  await t.test("Connection URI Parsing and Connect options parsing", async () => {
+    const { parseConnectionString } = require("./dist/cjs/index.js");
+    
+    // 1. Valid non-encrypted URI
+    const parsed1 = parseConnectionString("ssdiskdb://ssdb_key123@127.0.0.1:8971/server-x");
+    assert.strictEqual(parsed1.remoteUrl, "http://127.0.0.1:8971");
+    assert.strictEqual(parsed1.apiKey, "ssdb_key123");
+    assert.strictEqual(parsed1.serverId, "server-x");
+    assert.strictEqual(parsed1.encryptionKey, undefined);
+
+    // 2. Valid encrypted URI
+    const parsed2 = parseConnectionString("ssdiskdb+encry://ssdb_key123@127.0.0.1:8971/server-x?key=supersecretkey");
+    assert.strictEqual(parsed2.remoteUrl, "http://127.0.0.1:8971");
+    assert.strictEqual(parsed2.apiKey, "ssdb_key123");
+    assert.strictEqual(parsed2.serverId, "server-x");
+    assert.strictEqual(parsed2.encryptionKey, "supersecretkey");
+
+    // 3. Invalid URI format throws
+    assert.throws(() => {
+      parseConnectionString("invalid://uri");
+    }, /Invalid connection URI format/);
+  });
+
+  await t.test("Remote Client with URI and Encryption Integration", async () => {
+    const dashboardPort = 9015;
+    const testDbPath = "./test-uri-remote-db";
+    const fs = require("fs");
+    fs.rmSync(testDbPath, { recursive: true, force: true });
+
+    // Start central server
+    const centralServer = await connect({
+      storagePath: testDbPath,
+      startDashboard: true,
+      dashboardPort
+    });
+
+    const apiKey = "ssdb_secret_key";
+    await centralServer.db.put("config:server:server-enc", JSON.stringify({ registeredAt: Date.now(), apiKey }));
+
+    // Connect remote client via encrypted connection URI
+    const uri = `ssdiskdb+encry://${apiKey}@localhost:${dashboardPort}/server-enc?key=client-aes-key`;
+    const client = await connect(uri);
+
+    // Perform CRUD operations
+    await client.set("secure_key", { confidential: "remote data" });
+    assert.deepStrictEqual(await client.get("secure_key"), { confidential: "remote data" });
+
+    // Verify raw content on central server is encrypted
+    const rawVal = await centralServer.db.get("s:client:server-enc:secure_key");
+    assert.ok(rawVal);
+    assert.strictEqual(typeof rawVal, "string");
+    assert.ok(/^[0-9a-fA-F]{32}:[0-9a-fA-F]+$/.test(rawVal)); // Verify AES IV and ciphertext format
+
+    // Incr operation on client-side encrypted remote
+    await client.set("counter", 10);
+    assert.strictEqual(await client.incr("counter", 5), 15);
+    assert.strictEqual(await client.get("counter"), 15);
+
+    // Hash operations
+    await client.hset("hash-enc", "field1", { data: 42 });
+    assert.deepStrictEqual(await client.hget("hash-enc", "field1"), { data: 42 });
+
+    // Get all keys (verifying decryption works and s: prefix is restored)
+    const allKeys = await client.getAllKeys();
+    assert.ok(allKeys.some(k => k.key === "s:secure_key" && k.value.confidential === "remote data"));
+    assert.ok(allKeys.some(k => k.key === "s:counter" && k.value === 15));
+    assert.ok(allKeys.some(k => k.key === "h:hash-enc:field1" && k.value.data === 42));
+
+    await client.close();
+    await centralServer.close();
+    fs.rmSync(testDbPath, { recursive: true, force: true });
+  });
+
+  await t.test("Dashboard Dual-Mode Login and Proxy Verification", async () => {
+    const dashboardPort = 9020;
+    const centralPort = 9021;
+    const dbPath1 = "./test-dual-dashboard-1";
+    const dbPath2 = "./test-dual-dashboard-2";
+    const fs = require("fs");
+    fs.rmSync(dbPath1, { recursive: true, force: true });
+    fs.rmSync(dbPath2, { recursive: true, force: true });
+
+    // Start Central server (the target remote server)
+    const centralServer = await connect({
+      storagePath: dbPath2,
+      startDashboard: true,
+      dashboardPort: centralPort
+    });
+    const apiKey = "central_key";
+    await centralServer.db.put("config:server:server-y", JSON.stringify({ registeredAt: Date.now(), apiKey }));
+
+    // Start local server (the one hosting our dual-mode dashboard)
+    const localServer = await connect({
+      storagePath: dbPath1,
+      startDashboard: true,
+      dashboardPort
+    });
+
+    // 1. Perform local login to dashboard and confirm local mode works
+    const resLocalLogin = await fetch(`http://localhost:${dashboardPort}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "manoj", password: "manoj" })
+    });
+    assert.strictEqual(resLocalLogin.status, 200);
+    const localLoginJson = await resLocalLogin.json();
+    assert.strictEqual(localLoginJson.role, "admin");
+
+    // 2. Perform remote URI login to connect to the central server
+    const remoteUri = `ssdiskdb://central_key@localhost:${centralPort}/server-y`;
+    const resRemoteLogin = await fetch(`http://localhost:${dashboardPort}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "remote", connectionUri: remoteUri })
+    });
+    assert.strictEqual(resRemoteLogin.status, 200);
+    const remoteCookie = resRemoteLogin.headers.get("set-cookie").match(/session=[^;]+/)[0];
+
+    // 3. Save a key through the dashboard under remote session
+    const resSaveKey = await fetch(`http://localhost:${dashboardPort}/api/keys`, {
+      method: "POST",
+      headers: {
+        "Cookie": remoteCookie,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ type: "string", key: "remote_dash_key", value: "hello from proxy dashboard" })
+    });
+    assert.strictEqual(resSaveKey.status, 200);
+
+    // Verify key was saved in central server namespace, NOT local server
+    assert.strictEqual(await localServer.get("remote_dash_key"), undefined);
+    assert.strictEqual(await centralServer.db.get("s:client:server-y:remote_dash_key"), JSON.stringify("hello from proxy dashboard"));
+
+    // 4. Retrieve keys via proxy dashboard
+    const resGetKeys = await fetch(`http://localhost:${dashboardPort}/api/keys`, {
+      headers: { "Cookie": remoteCookie }
+    });
+    assert.strictEqual(resGetKeys.status, 200);
+    const keys = await resGetKeys.json();
+    const found = keys.find(k => k.key === "remote_dash_key" && k.server === "server-y");
+    assert.ok(found);
+    assert.strictEqual(found.value, "hello from proxy dashboard");
+
+    // 5. Try calling forbidden server allowed configurations on remote session
+    const resForbiddenAdd = await fetch(`http://localhost:${dashboardPort}/api/servers`, {
+      method: "POST",
+      headers: {
+        "Cookie": remoteCookie,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ address: "attacker-ip" })
+    });
+    assert.strictEqual(resForbiddenAdd.status, 403);
+
+    // Clean up
+    const resLogout = await fetch(`http://localhost:${dashboardPort}/api/logout`, {
+      method: "POST",
+      headers: { "Cookie": remoteCookie }
+    });
+    assert.strictEqual(resLogout.status, 200);
+
+    await localServer.close();
+    await centralServer.close();
+    fs.rmSync(dbPath1, { recursive: true, force: true });
+    fs.rmSync(dbPath2, { recursive: true, force: true });
+  });
 });
 
