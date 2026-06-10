@@ -1,7 +1,18 @@
 {
   "name": "ssdiskdb",
-  "version": "1.0.1",
+  "version": "1.0.2",
+  "bin": {
+    "ssdiskdb": "./dist/cjs/cli.js"
+  },
   "description": "Promise-based SSDB client",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ManojGowda89/ssdiskdb.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ManojGowda89/ssdiskdb/issues"
+  },
+  "homepage": "https://github.com/ManojGowda89/ssdiskdb#readme",
   "main": "./dist/cjs/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -29,10 +40,10 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "ssdb": "^0.3.8"
+    "level": "^10.0.0"
   },
   "devDependencies": {
-    "typescript": "^5.9.0",
-    "@types/node": "^24.0.0"
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
   }
 }
